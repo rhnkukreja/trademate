@@ -1,0 +1,113 @@
+						METRICS
+
+
+
+
+# BASIC IDENTIFICATION
+            'stock_symbol': 'Stock ticker/symbol',
+            'breakout_time': 'Time when breakout occurred (if intraday)',
+            'sector': 'Sector of the stock (IT, Banking, Pharma, etc.)',
+            'market_cap': 'Market cap category (Large/Mid/Small)',
+            
+            # PRICE DATA AT BREAKOUT
+            'breakout_open': 'Open price on breakout candle',
+            'breakout_high': 'High price on breakout candle',
+            'breakout_low': 'Low price on breakout candle',
+            'breakout_close': 'Close price on breakout candle (entry point)',
+            'breakout_volume': 'Volume on breakout candle',
+            'prev_close': 'Previous day/candle close price',
+            
+            # MOVING AVERAGES AT BREAKOUT
+            'sma_20': '20-period Simple Moving Average',
+            'sma_50': '50-period Simple Moving Average',
+            'sma_100': '100-period Simple Moving Average',
+            'sma_200': '200-period Simple Moving Average',
+            'ema_20': '20-period Exponential Moving Average',
+            'ema_50': '50-period Exponential Moving Average', 
+            
+            # VOLUME ANALYSIS
+            'volume_sma_20': '20-day average volume',
+            'volume_ratio': 'Current volume / 20-day avg volume',
+            'volume_spike': 'Boolean: Volume > 2x average?',
+            'volume_percentile': 'Volume percentile vs last 100 days',
+            'prev_3day_avg_volume': 'Average volume of previous 3 days',
+            
+            # TECHNICAL INDICATORS
+            'rsi_14': '14-period RSI',
+            'macd': 'MACD line',
+            'macd_signal': 'MACD signal line',
+            'macd_histogram': 'MACD histogram',
+            'bollinger_upper': 'Bollinger Band upper',
+            'bollinger_lower': 'Bollinger Band lower',
+            'bollinger_width': 'Bollinger Band width (volatility)',
+            'atr_14': '14-period Average True Range',
+            'stoch_k': 'Stochastic %K',
+            'stoch_d': 'Stochastic %D',
+            
+            # PRICE MOMENTUM & STRENGTH
+            'price_change_1d': '1-day price change %',
+            'price_change_3d': '3-day price change %',
+            'price_change_5d': '5-day price change %',
+            'price_change_10d': '10-day price change %',
+            'volatility_20d': '20-day price volatility',
+            'gap_from_prev_close': 'Gap % from previous close',
+            
+            # RESISTANCE LEVELS
+            'resistance_level_1': 'Nearest resistance level above',
+            'resistance_strength_1': 'How many times this level was tested',
+            'distance_to_resistance': 'Distance to nearest resistance %',
+            'support_level_1': 'Nearest support level below',
+            'distance_to_support': 'Distance to nearest support %',
+            
+            # CANDLE PATTERN ANALYSIS
+            'candle_body_size': 'Body size as % of total range',
+            'upper_shadow_ratio': 'Upper shadow / total range',
+            'lower_shadow_ratio': 'Lower shadow / total range',
+            'is_bullish_candle': 'Boolean: Close > Open?',
+            'candle_pattern': 'Specific candle pattern (hammer, doji, etc.)',
+            
+            # MARKET CONTEXT
+            'nifty_change': 'Nifty 50 % change on breakout day',
+            'banknifty_change': 'Bank Nifty % change on breakout day',
+            'market_trend': 'Market trend (Bullish/Bearish/Sideways)',
+            'vix_level': 'VIX level on breakout day',
+            'sector_performance': 'Sector performance vs Nifty on breakout day',
+            
+            # PRE-BREAKOUT CONDITIONS
+            'consolidation_days': 'Days of consolidation before breakout',
+            'pre_breakout_volume_trend': 'Volume trend in 5 days before breakout',
+            'failed_breakout_attempts': 'Number of false breakouts in past 30 days',
+            'time_since_last_breakout': 'Days since previous successful breakout',
+            
+            # FUNDAMENTAL DATA (if available)
+            'pe_ratio': 'Price to Earnings ratio',
+            'market_cap_size': 'Market cap in crores',
+            'avg_delivery_percentage': 'Average delivery % in last 10 days',
+            'institutional_holding': 'Institutional holding %',
+            
+            # POST-BREAKOUT PERFORMANCE (TARGET VARIABLES)
+            'max_gain_1d': 'Maximum gain in 1 day post-breakout',
+            'max_gain_3d': 'Maximum gain in 3 days post-breakout',
+            'max_gain_5d': 'Maximum gain in 5 days post-breakout',
+            'max_gain_10d': 'Maximum gain in 10 days post-breakout',
+            'close_price_1d': 'Close price after 1 day',
+            'close_price_3d': 'Close price after 3 days',
+            'close_price_5d': 'Close price after 5 days',
+            'close_price_10d': 'Close price after 10 days',
+            
+            # SUCCESS METRICS (PRIMARY TARGETS)
+            'hit_5_percent_target': 'Boolean: Hit 5% target?',
+            'hit_10_percent_target': 'Boolean: Hit 10% target? (YOUR MAIN TARGET)',
+            'hit_15_percent_target': 'Boolean: Hit 15% target?',
+            'days_to_hit_10_percent': 'Days taken to hit 10% target (if achieved)',
+            'max_drawdown': 'Maximum drawdown before hitting target',
+            'stop_loss_hit': 'Boolean: Hit 5% stop loss?',
+            
+            # CLASSIFICATION LABELS
+            'breakout_quality': 'Categorical: Excellent/Good/Average/Poor',
+            'true_breakout': 'Boolean: TRUE BREAKOUT (main target for ML)',
+            'breakout_strength_score': 'Numerical score 1-10 for breakout quality'
+
+
+
+

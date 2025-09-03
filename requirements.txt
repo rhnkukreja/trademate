@@ -1,0 +1,10 @@
+loadenv
+kiteconnect
+supabase
+pandas
+numpy
+talib
+scipy
+openpyxl
+xlsxwriter
+tqdm
