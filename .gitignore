@@ -1,0 +1,39 @@
+# Ignore environment files
+.env
+
+# Ignore all the log files
+*.log
+
+# Ignore the text files
+*.txt
+
+# Ignore the pycache
+__pycache__/
+
+# Ignore the Trading session folders
+tradingview_session_15/
+tradingview_session_60/
+tradingview_session_D/
+temp_sessions/
+tradingview_warm_session/
+tradingview_session_any/
+
+# Ignore the screenshot folder
+chart_screens/
+temp/
+screenshots/
+
+# Ignore the venv folder
+tvenv/
+
+# Other files
+access_token_fetch.py
+tv_login_once.py
+testing.py
+testing_agent.py
+tv_state.json
+logistic_breakout_model_2.pkl
+credentials.json
+
+# Ignore excel files
+monitor_list_backup.xlsx

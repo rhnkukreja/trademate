@@ -1,7 +1,0 @@
-Description for each file of the Algorithm
-
-config.py: Centralizes all settings and constants.
-database.py: Handles all interactions with Supabase.
-data_provider.py: Manages all data fetching and pre-computation (from yfinance and NSE).
-analyzer.py: Contains the core trading logic for identifying breakouts.
-main.py: The main entry point that orchestrates the entire process.
