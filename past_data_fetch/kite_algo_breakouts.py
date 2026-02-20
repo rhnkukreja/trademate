@@ -642,7 +642,7 @@ def main():
     all_symbols = [s for s in nse_symbols if s in instrument_map]
     logger.info(f"NSE symbols: {len(nse_symbols)} | Kite-mapped symbols: {len(all_symbols)}")
 
-    target_date = datetime.date(2026, 2, 3)
+    target_date = datetime.date(2026, 2, 6)
     target_dates = [target_date]
     logger.info(f"Targeting dates: {target_dates}")
 

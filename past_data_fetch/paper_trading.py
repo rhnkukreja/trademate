@@ -274,7 +274,7 @@ def run_scanner():
     rsi_cache = {}
     hourly_cache = {}
     
-    target_dates = pd.date_range(start="2026-02-01", end="2026-02-05").date               # FOR A WEEK
+    target_dates = pd.date_range(start="2026-02-16", end="2026-02-19").date               # FOR A WEEK
 
     # target_dates = pd.date_range(start="2026-02-02", end="2026-02-02").date             # FOR TODAY
 
@@ -412,7 +412,7 @@ def run_scanner():
     try:
         if final_results:
             output_df = pd.DataFrame(final_results)
-            output_filename = "Paper_trading_week_1st_feb.xlsx"
+            output_filename = "Paper_trading_week_16th_feb.xlsx"
             
             # Save the file
             output_df.to_excel(output_filename, index=False)

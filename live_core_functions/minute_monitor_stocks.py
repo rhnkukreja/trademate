@@ -2,10 +2,10 @@ import time
 import datetime
 import pandas as pd
 import numpy as np
-from common import kite, logger, supabase, batch_upsert_supabase, next_price_above
+from utils.common import kite, logger, supabase, batch_upsert_supabase, next_price_above
 import threading
-from monitor_breakouts import get_monitor_list, process_breakout, SCRIPT_START_TIME
-from live_paper_trader import start_paper_trade
+from live_core_functions.monitor_breakouts import get_monitor_list, process_breakout, SCRIPT_START_TIME
+from live_core_functions.live_paper_trader import start_paper_trade
 
 ARMED_SYMBOLS = set()
 PAPER_TRADES_TODAY = set()
@@ -155,8 +155,6 @@ def run_breakout_check(symbols, tier):
         sixth_ma = mas[-3] if len(mas) >= 3 else seventh_ma # 6th MA (3rd highest)
         fifth_ma = mas[-4] if len(mas) >= 4 else mas[0]     # 5th MA
 
-
-
         # Upgrade Slow -> Fast
         if current_price >= sixth_ma and current_tier == "slow":
             try:
@@ -244,7 +242,7 @@ def run_breakout_check(symbols, tier):
                 limit_price = round(breakout_price + tick_size, 2)
 
                 try:
-                    from live_paper_trader import place_sl_l_buy_order
+                    from live_core_functions.live_paper_trader import place_sl_l_buy_order
                     place_sl_l_buy_order(symbol, trigger_price, limit_price, investment_per_trade=5000)
                     ARMED_SYMBOLS.add(symbol)
                     logger.info(f"🟦 ARMED {symbol} | TRIGGER={trigger_price} LIMIT={limit_price}")
@@ -278,7 +276,7 @@ def run_breakout_check(symbols, tier):
 
             if not existing.data:
                 detection_time = datetime.datetime.now() # Capture the exact second of the LTP hit
-                logger.info(f"🎯 LTP CROSS DETECTED: {symbol} at {current_price}")
+                logger.info(f"🎯 BREAKOUT DETECTED: {symbol} at {current_price}")
 
                 if detection_time <= SCRIPT_START_TIME:
                     continue # Skip stocks that already broke out before we started
@@ -299,7 +297,6 @@ def run_breakout_check(symbols, tier):
                     "symbol": symbol,
                     "monitor_data": stock_data,
                     "current_price": current_price,
-                    "nifty_data": nifty_data,
                     "analysis_date": today,
                     "instrument_token": token_map_local.get(symbol)
                 })
@@ -307,7 +304,7 @@ def run_breakout_check(symbols, tier):
                 analysis_thread.start()
 
 
-def main():
+def start_finding_breakouts():
     """Main monitoring loop with non-blocking Slow Tier."""
     logger.info("Starting tiered monitoring system...")
     
@@ -349,8 +346,12 @@ def main():
         # 1. FAST TIER: Run immediately in main thread (High Priority)
         if last_fast_check is None or (now - last_fast_check).seconds >= 60:
             fast_stocks = get_stocks_by_tier("fast", today)
+            fast_stocks = [
+                s for s in fast_stocks
+                if s not in PAPER_TRADES_TODAY
+            ]
             if fast_stocks:
-                logger.info(f"⚡ FAST tier check: {len(fast_stocks)} stocks")
+                logger.info(f"⚡ FAST tier stocks: ({len(fast_stocks)}):{fast_stocks} ")
                 run_breakout_check(fast_stocks, "fast")
             last_fast_check = now
         
@@ -365,4 +366,4 @@ def main():
         time.sleep(5)
 
 if __name__ == "__main__":
-    main()
+    start_finding_breakouts()

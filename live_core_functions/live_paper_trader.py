@@ -1,14 +1,29 @@
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
 import datetime
 import time
-from common import kite, token_map, load_token_map, logger # Uses your existing kite instance
+from utils.common import kite, token_map, load_token_map, logger # Uses your existing kite instance
 import threading
+from dotenv import load_dotenv
+import json
+import os
+import base64
 
+load_dotenv()
 load_token_map()
 # --- Google Sheets Setup ---
-gc = gspread.service_account(filename='credentials.json')
+creds_b64 = os.getenv("GOOGLE_SHEET_CREDS_B64")
+
+if not creds_b64:
+    raise Exception("GOOGLE_SHEET_CREDS_B64 not set")
+
+decoded = base64.b64decode(creds_b64)
+info = json.loads(decoded)
+
+gc = gspread.service_account_from_dict(info)
+sh = gc.open("Live_Paper_Trading")
+sheet = sh.sheet1
+
 PAPER_TRADE_ONLY = True
 SHEET_LOCK = threading.Lock()
 ACTIVE_EXIT_MONITORS = set()
@@ -90,16 +105,6 @@ def backfill_exit_for_open_trades():
             sheet.update_cell(i, 14, f"{pnl_pct}%")
 
         print(f"📌 Backfilled {symbol}: {reason}")
-
-# Open the sheet by its exact name
-try:
-    sh = gc.open("Live_Paper_Trading")
-    sheet = sh.sheet1
-    print("Successfully connected to Google Sheets!")
-    backfill_exit_for_open_trades()
-except Exception as e:
-    sheet = None
-    print(f"Error opening sheet: {e}")
 
 DAILY_BUDGET = 20000
 daily_spent = 0
@@ -265,10 +270,22 @@ def start_paper_trade(symbol, breakout_price, breakout_time, model_pred, ai_dec)
 
     ACTIVE_EXIT_MONITORS.add(symbol)
 
-    # Then start exit thread
+    # Fetch token directly from Kite instruments
+    instruments = kite.instruments("NSE")
+    token = None
+
+    for ins in instruments:
+        if ins["tradingsymbol"] == symbol:
+            token = ins["instrument_token"]
+            break
+
+    if not token:
+        print(f"❌ Token not found for {symbol}. Cannot start exit monitor.")
+        return
+
     exit_thread = threading.Thread(
         target=monitor_live_exit,
-        args=(symbol, breakout_price),
+        args=(symbol, breakout_price, token),
         daemon=True
     )
     exit_thread.start()
@@ -302,48 +319,31 @@ def finalize_trade(symbol, exit_price, reason):
 
             # ✅ COMPLETE cleanup for re-entry
             ACTIVE_EXIT_MONITORS.discard(symbol)
-            from minute_monitor_stocks import PAPER_TRADES_TODAY, ARMED_SYMBOLS  # ← Import both
+            from live_core_functions.minute_monitor_stocks import PAPER_TRADES_TODAY, ARMED_SYMBOLS  # ← Import both
             PAPER_TRADES_TODAY.discard(symbol)
             ARMED_SYMBOLS.discard(symbol)  # ✅ ADD THIS LINE
 
         else:
             print(f"Error: Could not find an active 'OPEN' trade for {symbol}.")
             ACTIVE_EXIT_MONITORS.discard(symbol)
-            from minute_monitor_stocks import PAPER_TRADES_TODAY, ARMED_SYMBOLS  # ← Import both
+            from live_core_functions.minute_monitor_stocks import PAPER_TRADES_TODAY, ARMED_SYMBOLS
             PAPER_TRADES_TODAY.discard(symbol)
-            ARMED_SYMBOLS.discard(symbol)  # ✅ ADD THIS LINE
+            ARMED_SYMBOLS.discard(symbol)
 
     except Exception as e:
         print(f"CRITICAL ERROR in finalize_trade: {e}")
 
 # --- Live Exit Monitor ---
-def monitor_live_exit(symbol, buy_price):
+def monitor_live_exit(symbol, buy_price,token):
     """
     Background loop to check for SL or 3% Target.
-    """
-    if not token_map:
-        load_token_map()
-        
-    token = token_map.get(symbol)
-    if not token:
-        # One last try before giving up
-        load_token_map()
-        token = token_map.get(symbol)
-        if not token:
-            logger.info(f"❌ CRITICAL: Token still not found for {symbol}, stopping.")
-            return # Exit thread
-        
+    """        
     sl = buy_price
     target = buy_price * 1.03
     
     while symbol in ACTIVE_EXIT_MONITORS:
         try:
             # Fetch minute candle data
-            token = token_map.get(symbol)
-            if not token:
-                print(f"❌ Token not found for {symbol}, stopping monitor")
-                break
-
             today = datetime.datetime.now().date()
             from_dt = datetime.datetime.combine(today, datetime.time(9, 15))
             to_dt = datetime.datetime.now()

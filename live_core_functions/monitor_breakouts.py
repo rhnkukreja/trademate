@@ -1,6 +1,6 @@
 import datetime
 import pandas as pd
-from common import supabase, kite, logger, next_price_above
+from utils.common import supabase, kite, logger, next_price_above
 
 
 SCRIPT_START_TIME = datetime.datetime.now()

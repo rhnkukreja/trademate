@@ -7,6 +7,12 @@ import uuid
 from pathlib import Path
 from playwright.async_api import async_playwright
 import time
+import os
+import json
+from dotenv import load_dotenv
+import base64
+
+load_dotenv()
 
 # --- RESTORED ORIGINAL CONSTANTS ---
 LOGIN_CHECK_TIMEOUT = 120_000
@@ -162,9 +168,18 @@ async def run(symbol: str, dt_str: str, out_dir: str):
                 channel="chrome",
                 args=["--disable-blink-features=AutomationControlled"],
             )
+
+            tv_state_b64 = os.getenv("TV_STATE_JSON_B64")
+
+            if not tv_state_b64:
+                raise Exception("TV_STATE_JSON_B64 not found in .env")
+
+            decoded = base64.b64decode(tv_state_b64)
+            tv_state_dict = json.loads(decoded)
+
             context = await browser.new_context(
                 viewport=VIEWPORT,
-                storage_state="tv_state.json"
+                storage_state=tv_state_dict
             )
 
             page_15 = await context.new_page()

@@ -36,4 +36,5 @@ logistic_breakout_model_2.pkl
 credentials.json
 
 # Ignore excel files
-monitor_list_backup.xlsx
+*.xlsx
+*.pkl

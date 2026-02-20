@@ -3,28 +3,36 @@ import time
 import threading
 import pandas as pd
 import gspread
-from common import kite, logger, next_price_above, load_token_map, token_map
-from build_monitor_list import main as run_monitor_builder
-from minute_monitor_stocks import get_stocks_by_tier, run_breakout_check, ARMED_SYMBOLS
-from monitor_breakouts import process_breakout, get_monitor_list
-from live_paper_trader import ACTIVE_EXIT_MONITORS, finalize_trade
+import os
+import json
+from dotenv import load_dotenv
+from utils.common import kite, logger, next_price_above, load_token_map, token_map
+from live_core_functions.build_monitor_list import main as run_monitor_builder
+from live_core_functions.minute_monitor_stocks import get_stocks_by_tier, run_breakout_check, ARMED_SYMBOLS
+from live_core_functions.monitor_breakouts import process_breakout, get_monitor_list
+from live_core_functions.live_paper_trader import ACTIVE_EXIT_MONITORS, finalize_trade
 
-
+load_dotenv()
 # --- Google Sheets Setup ---
 SHEET_LOCK = threading.Lock()
+gc = None 
+sheet = None
+creds_json = os.getenv("GOOGLE_SHEET_CREDS")
 
-try:
-    gc = gspread.service_account(filename='credentials.json')
-    sh = gc.open("Live_Paper_Trading")
+if creds_json:
+    try:
+        info = json.loads(creds_json)
+        gc = gspread.service_account_info(info)
+        sh = gc.open("Live_Paper_Trading")
+        sheet = sh.sheet1
+        logger.info("✅ Successfully connected to Google Sheets")
+    except Exception as e:
+        logger.error(f"❌ Failed to load Google Sheet: {e}")
     
     # Get Sheet8 directly by name
     sheet = sh.worksheet("Sheet8")
     
     logger.info(f"✅ Connected to Google Sheet: {sheet.title}")
-except Exception as e:
-    sheet = None
-    logger.error(f"❌ Google Sheets connection failed: {e}")
-
 
 # Track armed times for real money trading
 ARMED_TIMES_REAL = {}
@@ -572,7 +580,7 @@ def process_stocks(symbols, today, tier):
             # If price crosses 6th MA, upgrade to FAST
             if current_price >= sixth_ma:
                 try:
-                    from common import supabase
+                    from utils.common import supabase
                     supabase.table("monitor_list").update(
                         {"monitoring_tier": "fast"}
                     ).eq("symbol", symbol).eq("date", today.strftime("%Y-%m-%d")).execute()
@@ -593,7 +601,7 @@ def process_stocks(symbols, today, tier):
             
             if current_price <= fifth_ma:
                 try:
-                    from common import supabase
+                    from utils.common import supabase
                     # Update the database so the script checks this stock less frequently
                     supabase.table("monitor_list").update(
                         {"monitoring_tier": "slow"}

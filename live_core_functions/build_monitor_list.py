@@ -4,7 +4,7 @@ import numpy as np
 from multiprocessing import Pool, cpu_count
 import time
 import logging
-from common import supabase, kite, logger, batch_upsert_supabase, next_price_above
+from utils.common import supabase, kite, logger, batch_upsert_supabase, next_price_above
 import io
 import requests
 from news_agent import get_stock_news
@@ -468,7 +468,7 @@ def process_batch(batch_info):
 
     return monitor_list
 
-def main():
+def create_monitor_list():
     """Builds monitor list."""
     logger.info("Starting Monitor List Builder...")
     
@@ -533,4 +533,4 @@ def main():
     logger.info("Monitor List Builder completed.")
 
 if __name__ == "__main__":
-    main()
+    create_monitor_list()

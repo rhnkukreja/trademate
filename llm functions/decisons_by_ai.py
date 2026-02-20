@@ -9,8 +9,8 @@ import os
 import requests
 import joblib
 from sklearn.linear_model import LinearRegression
-from common import load_token_map, token_map
-from common import kite, supabase, logger
+from utils.common import load_token_map, token_map
+from utils.common import kite, supabase, logger
 
 load_token_map()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
