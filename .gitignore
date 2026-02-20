@@ -5,7 +5,7 @@
 *.log
 
 # Ignore the text files
-*.txt
+
 
 # Ignore the pycache
 __pycache__/
