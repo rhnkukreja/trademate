@@ -7,7 +7,7 @@ import logging
 from utils.common import supabase, kite, logger, batch_upsert_supabase, next_price_above
 import io
 import requests
-from news_agent import get_stock_news
+from utils.news_agent import get_stock_news
 
 # -------------------------- Helper Functions -------------------------
 def get_kite_token_map():
