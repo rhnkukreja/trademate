@@ -108,12 +108,15 @@ def process_breakout(symbol, monitor_data, current_price, analysis_date, instrum
 
     logger.info(f"🚀 BREAKOUT DETECTED: {symbol} crossed 8th MA ({max_ma:.2f}) at {breakout_time}")
 
+    day_high = float(df_intraday["high"].max())
     early_breakout = {
         "symbol": symbol,
         "breakout_date": analysis_date.strftime("%Y-%m-%d"),
         "breakout_time": breakout_time.isoformat(),
         "breakout_price": float(breakout_price),
-        "monitor_entry_time": monitor_entry_time.isoformat()
+        "monitor_entry_time": monitor_entry_time.isoformat(),
+        "high_price": day_high,
+        "percent_move": round(((day_high - float(breakout_price)) / float(breakout_price)) * 100, 2)
     }
 
     supabase.table("live_breakouts").upsert(

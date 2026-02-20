@@ -102,7 +102,7 @@ def get_dashboard(date: str):
     # 4. Breakout details
     try:
         r = supabase.table("live_breakouts") \
-            .select("symbol, breakout_price, breakout_time") \
+            .select("symbol, breakout_price, breakout_time, percent_move, high_price, exit_reason") \
             .eq("breakout_date", date) \
             .execute()
 

@@ -2,7 +2,7 @@ import gspread
 import pandas as pd
 import datetime
 import time
-from utils.common import kite, token_map, load_token_map, logger # Uses your existing kite instance
+from utils.common import kite, token_map, load_token_map, logger, supabase, batch_upsert_supabase, next_price_above
 import threading
 from dotenv import load_dotenv
 import json
@@ -310,10 +310,20 @@ def finalize_trade(symbol, exit_price, reason):
 
             # ✅ Make updates thread-safe
             with SHEET_LOCK:
-                sheet.update_cell(row_num, 11, "CLOSED")         # K Status
-                sheet.update_cell(row_num, 12, exit_price)       # L Selling Price
-                sheet.update_cell(row_num, 13, reason)           # M Exit Reason
-                sheet.update_cell(row_num, 14, f"{pnl_pct}%")    # N P&L %
+                sheet.update_cell(row_num, 11, "CLOSED")
+                sheet.update_cell(row_num, 12, exit_price)
+                sheet.update_cell(row_num, 13, reason)
+                sheet.update_cell(row_num, 14, f"{pnl_pct}%")
+            
+            # Update Supabase live_breakouts with final EOD move and exit info
+            try:
+                supabase.table("live_breakouts").update({
+                    "percent_move": pnl_pct,
+                    "high_price": float(exit_price),
+                    "exit_reason": reason
+                }).eq("symbol", symbol).eq("breakout_date", datetime.date.today().strftime("%Y-%m-%d")).execute()
+            except Exception as e:
+                print(f"⚠️ Failed to update Supabase with final move for {symbol}: {e}")
 
             print(f"Successfully finalized {symbol}: {reason} at {exit_price} ({pnl_pct}%)")
 
