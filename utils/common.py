@@ -37,6 +37,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 SUPABASE_URL = os.getenv("K_SUPABASE_URL")
 SUPABASE_KEY = os.getenv("K_SUPABASE_KEY")
 KITE_API_KEY = os.getenv("KITE_API_KEY")
+KITE_API_SECRET = os.getenv("KITE_API_SECRET")
 KITE_ACCESS_TOKEN = os.getenv("KITE_ACCESS_TOKEN")
 
 # Validate Environment Variables
@@ -45,15 +46,24 @@ if not all([SUPABASE_URL, SUPABASE_KEY]):
     # Use sys.exit() in a shared module to stop everything if config is missing
     sys.exit("Critical Error: Missing environment variables.")
 
+
+def get_active_token():
+    """Fetches the latest token from Supabase or falls back to env."""
+    try:
+        if supabase:
+            res = supabase.table("kite_config").select("value").eq("key_name", "access_token").execute()
+            if res.data and len(res.data) > 0:
+                return res.data[0]["value"]
+    except Exception as e:
+        logger.warning(f"Could not fetch token from Supabase: {e}")
+    return os.getenv("KITE_ACCESS_TOKEN")
+
 # -------------------------- Client Initialization --------------------------
 
 try:
     import httpx
     from supabase import create_client, Client
 
-    # -------------------------------
-    # 1️⃣ Low-level HTTP connectivity check (FIXED)
-    # -------------------------------
     logger.info("Testing direct Supabase HTTP connectivity...")
 
     try:
@@ -92,15 +102,16 @@ try:
         logger.warning("Will retry Supabase on actual operations...")
         supabase = None
 
-    # -------------------------------
-    # 3️⃣ Initialize Kite Client (CRITICAL)
-    # -------------------------------
+    # 3️⃣ Initialize Kite Client
     kite = KiteConnect(api_key=KITE_API_KEY)
-    kite.set_access_token(KITE_ACCESS_TOKEN)
+    active_token = get_active_token()
+    kite.set_access_token(active_token)
 
-    # Fail fast if Kite is broken
-    kite.profile()
-    logger.info("Successfully initialized Kite client.")
+    try:
+        kite.profile()
+        logger.info("Successfully initialized Kite client.")
+    except Exception as e:
+        logger.error(f"Kite session expired or invalid: {e}. Automation script should refresh it.")
 
 except Exception as e:
     logger.critical(f"Failed to initialize critical clients: {e}")

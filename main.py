@@ -12,7 +12,9 @@ import gspread
 import base64
 import json
 from utils.common import supabase
-from datetime import date
+from datetime import date, datetime
+from utils.refresh_token import get_kite_access_token, update_supabase_token
+from utils.common import kite
 
 creds_b64 = os.getenv("GOOGLE_SHEET_CREDS_B64")
 
@@ -38,6 +40,25 @@ app.add_middleware(
 
 class PayloadRequest(BaseModel):
     token: str # Example field
+
+@app.post("/refresh-kite-session")
+async def trigger_token_refresh(background_tasks: BackgroundTasks):
+    """
+    Endpoint for cron-job.org to refresh the Kite access token.
+    Runs in background to avoid cron-job.org timeout.
+    """
+    def task():
+        try:
+            print("🔄 Automation: Starting headless login...")
+            new_token = get_kite_access_token()
+            update_supabase_token(new_token)
+            kite.set_access_token(new_token)
+            print("✅ Automation: Token refresh successful.")
+        except Exception as e:
+            print(f"❌ Automation: Refresh failed: {e}")
+
+    background_tasks.add_task(task)
+    return {"status": "request_received", "message": "Token refresh started in background."}
 
 @app.post("/start-finding-breakouts")
 async def handle_find_breakouts(background_tasks: BackgroundTasks):
@@ -75,17 +96,44 @@ async def health_check():
 
 @app.get("/api/dashboard")
 def get_dashboard(date: str):
+    requested_date = date  # e.g. "2026-02-23"
+
+    # === 1. If today → always return LIVE data ===
+    today_str = datetime.today().strftime("%Y-%m-%d")
+    if requested_date == today_str:
+        return build_dashboard_data(requested_date)   # ← we'll create this helper below
+
+    # === 2. For past dates → return frozen snapshot ===
+    try:
+        snapshot = supabase.table("dashboard_snapshots") \
+            .select("data") \
+            .eq("date", requested_date) \
+            .limit(1) \
+            .execute()
+
+        if snapshot.data:
+            return snapshot.data[0]["data"]   # Return exactly what was saved at 3:30 PM
+        else:
+            # No snapshot yet (very old date) → return empty or live as fallback
+            return build_dashboard_data(requested_date)
+    except:
+        return build_dashboard_data(requested_date)
+    
+    
+def build_dashboard_data(date_str: str):
+    """All the existing dashboard logic moved here so we can reuse it."""
     result = {}
+    
     # 1. Monitor list count
     try:
-        r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date).execute()
+        r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).execute()
         result["monitor_list_count"] = r.count
     except:
         result["monitor_list_count"] = 0
 
     # 2. Slow tier count
     try:
-        r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date).eq("monitoring_tier", "slow").execute()
+        r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).eq("monitoring_tier", "slow").execute()
         result["slow_tier_count"] = r.count
     except:
         result["slow_tier_count"] = 0
@@ -94,13 +142,12 @@ def get_dashboard(date: str):
     try:
         r = supabase.table("monitor_list") \
             .select("symbol, max_ma, tick_size", count="exact") \
-            .eq("date", date) \
+            .eq("date", date_str) \
             .eq("monitoring_tier", "fast") \
             .execute()
 
         result["fast_tier_count"] = r.count
 
-        # Build enriched symbol objects with breakout price
         fast_symbols_enriched = []
         for row in (r.data or []):
             max_ma = row.get("max_ma")
@@ -119,16 +166,14 @@ def get_dashboard(date: str):
             fast_symbols_enriched.append({
                 "symbol": row["symbol"],
                 "breakout_price": round(breakout_price, 2) if breakout_price else None,
-                "current_price": None  # Will be filled next
+                "current_price": None
             })
 
         result["fast_tier_symbols"] = fast_symbols_enriched
 
-        # Fetch live LTP for fast tier symbols
         if fast_symbols_enriched:
             try:
                 symbols_list = [s["symbol"] for s in fast_symbols_enriched]
-                # Batch in groups of 50 (Kite limit)
                 from utils.common import kite
                 all_quotes = {}
                 for i in range(0, len(symbols_list), 50):
@@ -136,14 +181,13 @@ def get_dashboard(date: str):
                     quotes = kite.quote(batch)
                     all_quotes.update(quotes)
                 
-                # Map current prices back
                 for item in result["fast_tier_symbols"]:
                     sym = item["symbol"]
                     q = all_quotes.get(f"NSE:{sym}")
                     if q:
                         item["current_price"] = q.get("last_price")
             except Exception as e:
-                pass  # current_price stays None if Kite fails
+                pass
     except:
         result["fast_tier_count"] = 0
         result["fast_tier_symbols"] = []
@@ -152,11 +196,10 @@ def get_dashboard(date: str):
     try:
         r = supabase.table("live_breakouts") \
             .select("symbol, breakout_price, breakout_time, percent_move, high_price, exit_reason") \
-            .eq("breakout_date", date) \
+            .eq("breakout_date", date_str) \
             .execute()
 
         result["breakouts"] = r.data or []
-        # Compute status field for each breakout
         for b in result["breakouts"]:
             exit_reason = b.get("exit_reason") or ""
             if "Target" in exit_reason:
@@ -188,7 +231,7 @@ def get_dashboard(date: str):
                 if len(row) < 14:
                     continue
                 row_date = row[0][:10] if row[0] else ""
-                if row_date != date:
+                if row_date != date_str:
                     continue
                 exit_reason = row[12].strip() if len(row) > 12 else ""
                 if "SL" in exit_reason:
@@ -202,7 +245,7 @@ def get_dashboard(date: str):
                     pnl_list.append({
                         "symbol": row[1], 
                         "pnl": float(pnl_str),
-                        "percent_move": float(pnl_str)  # pnl_str already is the % move
+                        "percent_move": float(pnl_str)
                     })
                 except:
                     pass

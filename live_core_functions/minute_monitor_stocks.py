@@ -371,5 +371,63 @@ def start_finding_breakouts():
         
         time_module.sleep(5)
 
+        if current_time >= time(15, 15):
+            try:
+                open_breakouts = supabase.table("live_breakouts") \
+                    .select("symbol, breakout_price, high_price") \
+                    .eq("breakout_date", today.strftime("%Y-%m-%d")) \
+                    .is_("exit_reason", None) \
+                    .execute()
+
+                for b in open_breakouts.data:
+                    symbol = b["symbol"]
+                    
+                    # Get latest price
+                    try:
+                        quote = kite.quote(f"NSE:{symbol}")
+                        curr_price = quote[f"NSE:{symbol}"]["last_price"]
+                    except:
+                        curr_price = b.get("high_price", b["breakout_price"])
+
+                    percent_move = round(((curr_price - b["breakout_price"]) / b["breakout_price"]) * 100, 2)
+
+                    supabase.table("live_breakouts").update({
+                        "exit_reason": "EOD Exit @15:15",
+                        "exit_time": current_time.strftime("%H:%M"),
+                        "percent_move": percent_move,
+                        "high_price": max(b.get("high_price", 0), curr_price)
+                    }).eq("symbol", symbol).eq("breakout_date", today.strftime("%Y-%m-%d")).execute()
+
+                    logger.info(f"🔴 FORCED EOD EXIT → {symbol} | {percent_move}% | {current_time.strftime('%H:%M')}")
+
+                    # Clean up memory so we don't keep monitoring
+                    from live_core_functions.live_paper_trader import ACTIVE_EXIT_MONITORS
+                    ACTIVE_EXIT_MONITORS.discard(symbol)
+                    PAPER_TRADES_TODAY.discard(symbol)
+
+            except Exception as e:
+                logger.error(f"EOD force exit failed: {e}")
+
+        # EOD SNAPSHOT at 15:30 — Save exact UI state for historical view
+        if current_time >= time(15, 30):
+            snapshot_taken = supabase.table("dashboard_snapshots") \
+                .select("date") \
+                .eq("date", today.strftime("%Y-%m-%d")) \
+                .execute()
+
+            if not snapshot_taken.data:   # Only take once per day
+                try:
+                    from main import build_dashboard_data   # Import the helper we created
+                    snapshot_data = build_dashboard_data(today.strftime("%Y-%m-%d"))
+
+                    supabase.table("dashboard_snapshots").upsert({
+                        "date": today.strftime("%Y-%m-%d"),
+                        "data": snapshot_data
+                    }).execute()
+
+                    logger.info(f"📸 Dashboard snapshot saved for {today} at 15:30")
+                except Exception as e:
+                    logger.error(f"Snapshot failed: {e}")
+
 if __name__ == "__main__":
     start_finding_breakouts()
