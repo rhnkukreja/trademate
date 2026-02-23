@@ -6,10 +6,16 @@ from utils.common import kite, logger, supabase, batch_upsert_supabase, next_pri
 import threading
 from live_core_functions.monitor_breakouts import get_monitor_list, process_breakout, SCRIPT_START_TIME
 from live_core_functions.live_paper_trader import start_paper_trade
+from datetime import datetime
+import pytz
 
 ARMED_SYMBOLS = set()
 PAPER_TRADES_TODAY = set()
 TRADE_LOCK = threading.Lock()
+
+def get_ist_time():
+    IST = pytz.timezone("Asia/Kolkata")
+    return datetime.now(IST)
 
 def load_monitor_list_from_excel():
     try:
