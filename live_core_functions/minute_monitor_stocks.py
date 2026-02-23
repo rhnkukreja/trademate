@@ -1,5 +1,5 @@
 import time
-import datetime
+from datetime import datetime, date, time
 import pandas as pd
 import numpy as np
 from utils.common import kite, logger, supabase, batch_upsert_supabase, next_price_above
@@ -72,7 +72,7 @@ def run_breakout_check(symbols, tier):
     
     logger.info(f"Checking {len(symbols)} stocks ({tier} tier) for breakouts...")
     
-    today = datetime.date.today()
+    today = date.today()
 
     # Load token map (KEEP THIS TOO - it creates a local version)
     try:
@@ -280,7 +280,7 @@ def run_breakout_check(symbols, tier):
                 .limit(1).execute()
 
             if not existing.data:
-                detection_time = datetime.datetime.now() # Capture the exact second of the LTP hit
+                detection_time = datetime.now() # Capture the exact second of the LTP hit
                 logger.info(f"🎯 BREAKOUT DETECTED: {symbol} at {current_price}")
 
                 if detection_time <= SCRIPT_START_TIME:
@@ -313,9 +313,9 @@ def start_finding_breakouts():
     """Main monitoring loop with non-blocking Slow Tier."""
     logger.info("Starting tiered monitoring system...")
     
-    today = datetime.date.today()
-    market_open = datetime.time(9, 15)
-    market_close = datetime.time(15, 30)
+    today = date.today()
+    market_open = time(9, 15)
+    market_close = time(15, 30)
     
     last_slow_check = None
     last_fast_check = None
@@ -332,14 +332,14 @@ def start_finding_breakouts():
 
             if slow_stocks:
                 run_breakout_check(slow_stocks, "slow")
-            last_slow_check = datetime.datetime.now()
+            last_slow_check = datetime.now()
         except Exception as e:
             logger.error(f"Error in Slow Tier thread: {e}")
         finally:
             slow_check_running = False
 
     while True:
-        now = datetime.datetime.now()
+        now = datetime.now()
         current_time = now.time()
         
         # Only run during market hours
