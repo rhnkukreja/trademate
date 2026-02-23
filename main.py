@@ -92,9 +92,58 @@ def get_dashboard(date: str):
         
     # 3. Fast tier count + symbols
     try:
-        r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date).eq("monitoring_tier", "fast").execute()
+        r = supabase.table("monitor_list") \
+            .select("symbol, max_ma, tick_size", count="exact") \
+            .eq("date", date) \
+            .eq("monitoring_tier", "fast") \
+            .execute()
+
         result["fast_tier_count"] = r.count
-        result["fast_tier_symbols"] = [row["symbol"] for row in r.data]
+
+        # Build enriched symbol objects with breakout price
+        fast_symbols_enriched = []
+        for row in (r.data or []):
+            max_ma = row.get("max_ma")
+            tick_size = row.get("tick_size") or 0.05
+            breakout_price = None
+            if max_ma:
+                from decimal import Decimal, ROUND_CEILING
+                dv = Decimal(str(max_ma))
+                dt = Decimal(str(tick_size))
+                n = (dv / dt).to_integral_value(rounding=ROUND_CEILING)
+                candidate = n * dt
+                if candidate <= dv:
+                    candidate = (n + 1) * dt
+                breakout_price = float(candidate)
+            
+            fast_symbols_enriched.append({
+                "symbol": row["symbol"],
+                "breakout_price": round(breakout_price, 2) if breakout_price else None,
+                "current_price": None  # Will be filled next
+            })
+
+        result["fast_tier_symbols"] = fast_symbols_enriched
+
+        # Fetch live LTP for fast tier symbols
+        if fast_symbols_enriched:
+            try:
+                symbols_list = [s["symbol"] for s in fast_symbols_enriched]
+                # Batch in groups of 50 (Kite limit)
+                from utils.common import kite
+                all_quotes = {}
+                for i in range(0, len(symbols_list), 50):
+                    batch = [f"NSE:{s}" for s in symbols_list[i:i+50]]
+                    quotes = kite.quote(batch)
+                    all_quotes.update(quotes)
+                
+                # Map current prices back
+                for item in result["fast_tier_symbols"]:
+                    sym = item["symbol"]
+                    q = all_quotes.get(f"NSE:{sym}")
+                    if q:
+                        item["current_price"] = q.get("last_price")
+            except Exception as e:
+                pass  # current_price stays None if Kite fails
     except:
         result["fast_tier_count"] = 0
         result["fast_tier_symbols"] = []
@@ -107,6 +156,19 @@ def get_dashboard(date: str):
             .execute()
 
         result["breakouts"] = r.data or []
+        # Compute status field for each breakout
+        for b in result["breakouts"]:
+            exit_reason = b.get("exit_reason") or ""
+            if "Target" in exit_reason:
+                b["status"] = "Target Hit"
+            elif "SL" in exit_reason:
+                b["status"] = "SL Hit"
+            elif "EOD" in exit_reason:
+                b["status"] = "EOD Exit"
+            elif b.get("percent_move") is not None:
+                b["status"] = "In Play"
+            else:
+                b["status"] = "In Play"
         result["breakout_count"] = len(result["breakouts"])
 
     except Exception:
@@ -137,7 +199,11 @@ def get_dashboard(date: str):
                     eod_exit += 1
                 pnl_str = row[13].replace("%", "").strip() if len(row) > 13 else "0"
                 try:
-                    pnl_list.append({"symbol": row[1], "pnl": float(pnl_str)})
+                    pnl_list.append({
+                        "symbol": row[1], 
+                        "pnl": float(pnl_str),
+                        "percent_move": float(pnl_str)  # pnl_str already is the % move
+                    })
                 except:
                     pass
         except:
