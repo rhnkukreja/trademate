@@ -9,6 +9,7 @@ import json
 import os
 import base64
 import pytz
+from utils.common import get_ist_time
 
 load_dotenv()
 load_token_map()
@@ -344,41 +345,34 @@ def finalize_trade(symbol, exit_price, reason):
     except Exception as e:
         print(f"CRITICAL ERROR in finalize_trade: {e}")
 
-# --- Live Exit Monitor ---
-def monitor_live_exit(symbol, buy_price,token):
-    """
-    Background loop to check for SL or 3% Target.
-    """        
+def monitor_live_exit(symbol, buy_price, token):
     sl = buy_price
-    target = buy_price * 1.03
+    target = round(buy_price * 1.03, 2)
     
     while symbol in ACTIVE_EXIT_MONITORS:
         try:
-            IST = pytz.timezone("Asia/Kolkata")
-            to_dt = datetime.datetime.now(IST).replace(tzinfo=None)
-            today = to_dt.date()
-            from_dt = datetime.datetime.combine(today, datetime.time(9, 15))
-            candles = kite.historical_data(token, from_dt, to_dt, "minute")
+            # 🆕 CHANGE 1: Use live quote instead of historical candles
+            quote = kite.quote([f"NSE:{symbol}"])
+            curr_price = quote[f"NSE:{symbol}"]["last_price"]
+        
+            now = get_ist_time()
             
-            if not candles:
-                time.sleep(30)
-                continue
-            
-            latest_candle = candles[-1]
-            curr_price = latest_candle['close']
-            
-            # Check Exit Conditions using CANDLE data
+            # Exit 1: SL Hit
             if curr_price <= sl:
                 finalize_trade(symbol, sl, "SL Hit Breakout Price")
                 break
+            
+            # Exit 2: Target Hit
             elif curr_price >= target:
                 finalize_trade(symbol, target, "Target Hit 3%")
                 break
-            elif to_dt.time() >= datetime.time(15, 15):
+            
+            # Exit 3: EOD Exit (Redundant safety)
+            elif now.time() >= datetime.time(15, 15):
                 finalize_trade(symbol, curr_price, "EOD Exit @15:15")
                 break
                 
-            time.sleep(3) # Poll every 3 seconds for faster SL/Target execution
+            time.sleep(2) # Faster polling for live data
         except Exception as e:
-            print(f"Error monitoring {symbol}: {e}")
-            time.sleep(3)
+            logger.error(f"Error monitoring {symbol}: {e}")
+            time.sleep(5)

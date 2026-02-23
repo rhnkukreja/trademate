@@ -12,6 +12,8 @@ try:
     import numpy as np
 except Exception:
     np = None
+import pytz
+from datetime import datetime
 
 # -------------------------- Configuration & Setup --------------------------
 
@@ -46,6 +48,10 @@ if not all([SUPABASE_URL, SUPABASE_KEY]):
     # Use sys.exit() in a shared module to stop everything if config is missing
     sys.exit("Critical Error: Missing environment variables.")
 
+def get_ist_time():
+    """Returns the current time in Indian Standard Time (IST)."""
+    ist = pytz.timezone('Asia/Kolkata')
+    return datetime.now(ist).replace(tzinfo=None)
 
 def get_active_token():
     """Fetches the latest token from Supabase or falls back to env."""

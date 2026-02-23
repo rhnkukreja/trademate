@@ -7,14 +7,11 @@ import threading
 from live_core_functions.monitor_breakouts import get_monitor_list, process_breakout, SCRIPT_START_TIME
 from live_core_functions.live_paper_trader import start_paper_trade
 import pytz
+from utils.common import get_ist_time
 
 ARMED_SYMBOLS = set()
 PAPER_TRADES_TODAY = set()
 TRADE_LOCK = threading.Lock()
-
-def get_ist_time():
-    IST = pytz.timezone("Asia/Kolkata")
-    return datetime.now(IST)
 
 def load_monitor_list_from_excel():
     try:
@@ -371,42 +368,31 @@ def start_finding_breakouts():
         
         time_module.sleep(5)
 
-        if current_time >= time(15, 15):
+        if current_time >= time(15, 15) and current_time < time(15, 30):
             try:
-                open_breakouts = supabase.table("live_breakouts") \
-                    .select("symbol, breakout_price, high_price") \
-                    .eq("breakout_date", today.strftime("%Y-%m-%d")) \
+                # Fetch all OPEN trades for today
+                open_trades = supabase.table("live_breakouts") \
+                    .select("symbol, breakout_price") \
+                    .eq("breakout_date", now.strftime("%Y-%m-%d")) \
                     .is_("exit_reason", None) \
                     .execute()
 
-                for b in open_breakouts.data:
-                    symbol = b["symbol"]
-                    
-                    # Get latest price
-                    try:
-                        quote = kite.quote(f"NSE:{symbol}")
-                        curr_price = quote[f"NSE:{symbol}"]["last_price"]
-                    except:
-                        curr_price = b.get("high_price", b["breakout_price"])
+                if open_trades.data:
+                    logger.info(f"⏰ EOD Cleanup: Closing {len(open_trades.data)} remaining trades.")
+                    for b in open_trades.data:
+                        symbol = b["symbol"]
+                        # Get final LTP
+                        try:
+                            q = kite.quote(f"NSE:{symbol}")
+                            ltp = q[f"NSE:{symbol}"]["last_price"]
+                        except:
+                            ltp = b["breakout_price"] # Fallback
 
-                    percent_move = round(((curr_price - b["breakout_price"]) / b["breakout_price"]) * 100, 2)
-
-                    supabase.table("live_breakouts").update({
-                        "exit_reason": "EOD Exit @15:15",
-                        "exit_time": current_time.strftime("%H:%M"),
-                        "percent_move": percent_move,
-                        "high_price": max(b.get("high_price", 0), curr_price)
-                    }).eq("symbol", symbol).eq("breakout_date", today.strftime("%Y-%m-%d")).execute()
-
-                    logger.info(f"🔴 FORCED EOD EXIT → {symbol} | {percent_move}% | {current_time.strftime('%H:%M')}")
-
-                    # Clean up memory so we don't keep monitoring
-                    from live_core_functions.live_paper_trader import ACTIVE_EXIT_MONITORS
-                    ACTIVE_EXIT_MONITORS.discard(symbol)
-                    PAPER_TRADES_TODAY.discard(symbol)
-
+                        # This calls the finalize_trade helper to update Sheet and Supabase
+                        from live_core_functions.live_paper_trader import finalize_trade
+                        finalize_trade(symbol, ltp, "EOD Exit @15:15")
             except Exception as e:
-                logger.error(f"EOD force exit failed: {e}")
+                logger.error(f"Global EOD Force Exit Error: {e}")
 
         # EOD SNAPSHOT at 15:30 — Save exact UI state for historical view
         if current_time >= time(15, 30):
