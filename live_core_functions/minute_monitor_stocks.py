@@ -280,14 +280,15 @@ def run_breakout_check(symbols, tier):
                 .limit(1).execute()
 
             if not existing.data:
-                detection_time = datetime.now() # Capture the exact second of the LTP hit
-                logger.info(f"🎯 BREAKOUT DETECTED: {symbol} at {current_price}")
+                detection_time = datetime.now()
 
                 if detection_time <= SCRIPT_START_TIME:
-                    continue # Skip stocks that already broke out before we started
-                
-                # 1. IMMEDIATE Trade Trigger (This becomes Buy Time)
-                # We pass "Processing..." because AI hasn't run yet
+                    logger.info(f"⏭️ Skipping old breakout for {symbol} (before script start)")
+                    with TRADE_LOCK:
+                        PAPER_TRADES_TODAY.discard(symbol)  # Allow re-check next cycle
+                    continue
+
+                logger.info(f"🎯 BREAKOUT DETECTED: {symbol} at {current_price}")
                 start_paper_trade(
                     symbol=symbol,
                     breakout_price=breakout_price,
@@ -332,7 +333,7 @@ def start_finding_breakouts():
 
             if slow_stocks:
                 run_breakout_check(slow_stocks, "slow")
-            last_slow_check = datetime.now()
+            last_slow_check = get_ist_time()
         except Exception as e:
             logger.error(f"Error in Slow Tier thread: {e}")
         finally:
