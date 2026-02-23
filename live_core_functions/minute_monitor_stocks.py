@@ -1,4 +1,4 @@
-import time
+import time as time_module
 from datetime import datetime, date, time
 import pandas as pd
 import numpy as np
@@ -345,7 +345,7 @@ def start_finding_breakouts():
         # Only run during market hours
         if current_time < market_open or current_time > market_close:
             logger.info("Market closed. Sleeping...")
-            time.sleep(600)
+            time_module.sleep(600)
             continue
         
         # 1. FAST TIER: Run immediately in main thread (High Priority)
@@ -368,7 +368,7 @@ def start_finding_breakouts():
             t.daemon = True
             t.start()
         
-        time.sleep(5)
+        time_module.sleep(5)
 
 if __name__ == "__main__":
     start_finding_breakouts()
