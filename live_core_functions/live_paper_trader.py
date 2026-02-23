@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import json
 import os
 import base64
+import pytz
 
 load_dotenv()
 load_token_map()
@@ -329,7 +330,7 @@ def finalize_trade(symbol, exit_price, reason):
 
             # ✅ COMPLETE cleanup for re-entry
             ACTIVE_EXIT_MONITORS.discard(symbol)
-            from live_core_functions.minute_monitor_stocks import PAPER_TRADES_TODAY, ARMED_SYMBOLS  # ← Import both
+            from live_core_functions.minute_monitor_stocks import PAPER_TRADES_TODAY, ARMED_SYMBOLS
             PAPER_TRADES_TODAY.discard(symbol)
             ARMED_SYMBOLS.discard(symbol)  # ✅ ADD THIS LINE
 
@@ -353,10 +354,10 @@ def monitor_live_exit(symbol, buy_price,token):
     
     while symbol in ACTIVE_EXIT_MONITORS:
         try:
-            # Fetch minute candle data
-            today = datetime.datetime.now().date()
+            IST = pytz.timezone("Asia/Kolkata")
+            to_dt = datetime.datetime.now(IST).replace(tzinfo=None)
+            today = to_dt.date()
             from_dt = datetime.datetime.combine(today, datetime.time(9, 15))
-            to_dt = datetime.datetime.now()
             candles = kite.historical_data(token, from_dt, to_dt, "minute")
             
             if not candles:
@@ -373,7 +374,7 @@ def monitor_live_exit(symbol, buy_price,token):
             elif curr_price >= target:
                 finalize_trade(symbol, target, "Target Hit 3%")
                 break
-            elif datetime.datetime.now().time() >= datetime.time(15, 15):
+            elif to_dt.time() >= datetime.time(15, 15):
                 finalize_trade(symbol, curr_price, "EOD Exit @15:15")
                 break
                 
