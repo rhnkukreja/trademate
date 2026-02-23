@@ -339,7 +339,7 @@ def start_finding_breakouts():
             slow_check_running = False
 
     while True:
-        now = datetime.now()
+        now = get_ist_time()
         current_time = now.time()
         
         # Only run during market hours
