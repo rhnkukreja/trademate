@@ -38,10 +38,14 @@ def get_kite_access_token():
         totp = pyotp.TOTP(TOTP_SECRET).now() # Generates the 6-digit code
         driver.find_element(By.XPATH, '//input[@type="number"]').send_keys(totp)
         driver.find_element(By.XPATH, '//button[@type="submit"]').click()
-        time.sleep(3)
+        time.sleep(5)
 
         # 4. Extract Request Token
         current_url = driver.current_url
+        if "request_token=" not in current_url:
+            print(f"❌ Failed to find token. Current URL: {current_url}")
+            driver.save_screenshot("login_error.png") # Helpful for debugging on Render
+            raise Exception("Token not found in URL")
         request_token = current_url.split("request_token=")[1].split("&")[0]
         
         # 5. Get the Session
