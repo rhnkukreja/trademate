@@ -71,13 +71,12 @@ def run_breakout_check(symbols, tier):
     
     today = date.today()
 
-    # Load token map (KEEP THIS TOO - it creates a local version)
-    try:
-        instruments = kite.instruments("NSE")
-        token_map_local = {ins["tradingsymbol"]: ins["instrument_token"] for ins in instruments}
-    except Exception as e:
-        logger.error(f"Failed to load tokens: {e}")
-        return
+    # Use the global token_map from common instead of re-fetching every minute
+    from utils.common import token_map as global_map
+    if not global_map:
+        from utils.common import load_token_map
+        load_token_map()
+    token_map_local = global_map
     
     # 1. Get LTP for ALL symbols in batches of 50 (Kite limit)
     all_quotes = {}

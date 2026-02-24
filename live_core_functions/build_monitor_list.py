@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from multiprocessing import Pool, cpu_count
 import time
-import logging
+import gc
 from utils.common import supabase, kite, logger, batch_upsert_supabase, next_price_above
 import io
 import requests
@@ -469,8 +469,8 @@ def process_batch(batch_info):
     return monitor_list
 
 def create_monitor_list():
-    """Builds monitor list."""
-    logger.info("Starting Monitor List Builder...")
+    """Builds monitor list sequentially to save memory on Render."""
+    logger.info("Starting Memory-Optimized Monitor List Builder...")
     
     # 1. Get Auth Token
     try:
@@ -488,49 +488,41 @@ def create_monitor_list():
     
     # 3. Fetch Stocks (ALL Stocks)
     stocks = get_all_nse_symbols()
-    # stocks = get_all_nse_symbols()[:100] # Use this ONLY for quick testing, comment out for production
-    
     if not stocks:
         logger.error("No stocks fetched. Exiting.")
         return
     
-    # 4. Prepare Batches
-    batch_size = 100
-    monitor_list = []
-    total_batches = (len(stocks) + batch_size - 1) // batch_size
-    
-    batch_inputs = [
-        (stocks[i:i + batch_size], i // batch_size + 1, total_batches, from_date, analysis_date, auth_token) 
-        for i in range(0, len(stocks), batch_size)
-    ]
-    
-    # 5. Execute in Parallel
-    with Pool(processes=min(cpu_count(), 3)) as pool:
-        batch_results = pool.map(process_batch, batch_inputs)
-    
-    for batch in batch_results:
-        monitor_list.extend(batch)
-    
-    # 6. Save Results
-    if monitor_list:
-        logger.info(f"✅ Found {len(monitor_list)} stocks for monitor list.")
 
+    # 4. Process Sequentially in Small Batches (Reduced to 50 for RAM safety)
+    batch_size = 50 
+    total_stocks = len(stocks)
+    total_batches = (total_stocks + batch_size - 1) // batch_size
+    
+    logger.info(f"Processing {total_stocks} stocks in {total_batches} sequential batches...")
+
+    for i in range(0, total_stocks, batch_size):
+        batch = stocks[i:i + batch_size]
+        batch_idx = (i // batch_size) + 1
+        
+        # Prepare inputs for the existing process_batch function
+        batch_input = (batch, batch_idx, total_batches, from_date, analysis_date, auth_token)
+        
         try:
-            batch_upsert_supabase("monitor_list", monitor_list)
-            logger.info("✅ Saved monitor list to Supabase")
-
+            # 🆕 CRITICAL: Run sequentially, NOT in a Pool
+            batch_monitor_list = process_batch(batch_input)
+            
+            # Upsert this batch immediately to Supabase
+            if batch_monitor_list:
+                batch_upsert_supabase("monitor_list", batch_monitor_list)
+                logger.info(f"✅ Batch {batch_idx}/{total_batches} saved and cleared from RAM.")
+            
+            # 🆕 CRITICAL: Clear batch data from memory immediately
+            del batch_monitor_list
+            gc.collect() 
+            
         except Exception as e:
-            logger.error(f"Supabase save failed, writing Excel backup: {e}")
+            logger.error(f"❌ Batch {batch_idx} failed: {e}")
 
-            df = pd.DataFrame(monitor_list)
-            df.to_excel("monitor_list_backup.xlsx", index=False)
-
-            logger.info("📁 Backup saved: monitor_list_backup.xlsx")
-
-    else:
-        logger.info("❌ No stocks met monitor criteria (Check market hours or logic).")
-    
-    logger.info("Monitor List Builder completed.")
-
+    logger.info("🏁 Monitor List Builder completed.")
 if __name__ == "__main__":
     create_monitor_list()

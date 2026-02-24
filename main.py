@@ -62,33 +62,40 @@ async def trigger_token_refresh(background_tasks: BackgroundTasks):
 
 @app.post("/start-finding-breakouts")
 async def handle_find_breakouts(background_tasks: BackgroundTasks):
-    try:
-        today = date.today().strftime("%Y-%m-%d")
+    """
+    Triggers the build and monitor flow in the background to prevent 
+    HTTP timeouts and handle memory spikes safely.
+    """
+    def full_algo_flow():
+        try:
+            today_str = date.today().strftime("%Y-%m-%d")
 
-        # 🔍 Check if monitor list already exists for today
-        existing = supabase.table("monitor_list") \
-            .select("symbol", count="exact") \
-            .eq("date", today) \
-            .limit(1) \
-            .execute()
+            # 1. Check/Build monitor list inside the background task
+            existing = supabase.table("monitor_list") \
+                .select("symbol", count="exact") \
+                .eq("date", today_str) \
+                .limit(1) \
+                .execute()
 
-        if not existing.count:
-            print("🔄 No monitor list found for today. Building...")
-            create_monitor_list()
-            print("✅ Monitor list built.")
-        else:
-            print("✅ Monitor list already exists. Skipping build.")
+            if not existing.count:
+                print(f"🔄 {today_str}: No monitor list found. Building now...")
+                create_monitor_list()
+            else:
+                print(f"✅ {today_str}: Monitor list already exists. Skipping build.")
 
-        # 🚀 Start breakout monitoring
-        background_tasks.add_task(start_finding_breakouts)
+            # 2. Start monitoring immediately after build completes
+            start_finding_breakouts()
+            
+        except Exception as e:
+            print(f"❌ Background Algo Flow Error: {e}")
 
-        return {
-            "status": "success",
-            "message": "Breakout monitoring started."
-        }
+    # Add the combined task to background
+    background_tasks.add_task(full_algo_flow)
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "status": "success", 
+        "message": "Monitor list build and breakout monitoring started in background."
+    }
 
 @app.get("/health", tags=["Health"])
 async def health_check():
