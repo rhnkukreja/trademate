@@ -262,6 +262,13 @@ def run_breakout_check(symbols, tier):
 
         # Trigger trade IMMEDIATELY when price crosses level
         if current_price >= breakout_price:
+            # 🆕 TIME GATE: Prevent new entries at or after 3:15 PM IST
+            # Using get_ist_time() to ensure timezone consistency
+            now_ist = get_ist_time()
+            if now_ist.time() >= time(15, 15):
+                logger.info(f"⏭️ Skipping late breakout for {symbol} at {current_price} (Time: {now_ist.strftime('%H:%M')})")
+                continue
+
             # ✅ Thread-safe check and add
             with TRADE_LOCK:
                 if symbol in PAPER_TRADES_TODAY:

@@ -1,6 +1,7 @@
 import requests
 import uvicorn
 import os
+import time
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 import httpx
 from pydantic import BaseModel
@@ -39,7 +40,7 @@ app.add_middleware(
 )
 
 class PayloadRequest(BaseModel):
-    token: str # Example field
+    token: str
 
 @app.post("/refresh-kite-session")
 async def trigger_token_refresh(background_tasks: BackgroundTasks):
@@ -47,17 +48,25 @@ async def trigger_token_refresh(background_tasks: BackgroundTasks):
     Endpoint for cron-job.org to refresh the Kite access token.
     Runs in background to avoid cron-job.org timeout.
     """
-    def task():
-        try:
-            print("🔄 Automation: Starting headless login...")
-            new_token = get_kite_access_token()
-            update_supabase_token(new_token)
-            kite.set_access_token(new_token)
-            print("✅ Automation: Token refresh successful.")
-        except Exception as e:
-            print(f"❌ Automation: Refresh failed: {e}")
+    def task_with_retries():
+        max_retries = 5
+        for attempt in range(1, max_retries + 1):
+            try:
+                print("🔄 Automation: Starting headless login...")
+                new_token = get_kite_access_token()
+                update_supabase_token(new_token)
+                kite.set_access_token(new_token)
+                print("✅ Automation: Token refresh successful.")
+            except Exception as e:
+                print(f"❌ Automation: Refresh failed: {e}")
+                if attempt < max_retries:
+                    wait_time = attempt * 30 # Wait 30s, 60s, 90s...
+                    print(f"🕒 Waiting {wait_time} seconds before next retry...")
+                    time.sleep(wait_time)
+                else:
+                    print("❌ Automation: All 5 refresh attempts failed.")
 
-    background_tasks.add_task(task)
+    background_tasks.add_task(task_with_retries)
     return {"status": "request_received", "message": "Token refresh started in background."}
 
 @app.post("/start-finding-breakouts")
