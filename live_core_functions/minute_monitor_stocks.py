@@ -312,12 +312,13 @@ def run_breakout_check(symbols, tier):
                 analysis_thread.daemon = True
                 analysis_thread.start()
 
+
 def check_stagnant_exits(now_str):
     """Exits trades where price has hit a circuit or stopped moving."""
     try:
-        # 1. Fetch all active trades for today
+        # 1. Fetch all active trades for today - REMOVED 'id' from select
         active_trades = supabase.table("live_breakouts") \
-            .select("id, symbol, last_price_checked, stagnant_count, breakout_price") \
+            .select("symbol, last_price_checked, stagnant_count, breakout_price") \
             .eq("breakout_date", now_str) \
             .is_("exit_reason", None) \
             .execute()
@@ -352,6 +353,7 @@ def check_stagnant_exits(now_str):
                 continue
 
             # 4. Update tracking columns using symbol and date as the unique identifier
+            # We use breakout_date because your unique constraint is (symbol, breakout_date)
             supabase.table("live_breakouts").update({
                 "last_price_checked": current_ltp,
                 "stagnant_count": count
