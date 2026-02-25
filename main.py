@@ -188,7 +188,8 @@ def build_dashboard_data(date_str: str):
             fast_symbols_enriched.append({
                 "symbol": row["symbol"],
                 "breakout_price": round(breakout_price, 2) if breakout_price else None,
-                "current_price": None
+                "current_price": None,
+                "has_derivative": bool(row.get("has_derivative", False))
             })
 
         result["fast_tier_symbols"] = fast_symbols_enriched
