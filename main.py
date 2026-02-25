@@ -79,6 +79,12 @@ async def handle_find_breakouts(background_tasks: BackgroundTasks):
         try:
             today_str = date.today().strftime("%Y-%m-%d")
 
+            token_response = supabase.table("kite_config").select("value").eq("key_name", "access_token").limit(1).execute()
+            if token_response.data:
+                kite.set_access_token(token_response.data[0]["value"])
+            else:
+                print("⚠️ Warning: No access token found in Supabase.")
+
             # 1. Check/Build monitor list inside the background task
             existing = supabase.table("monitor_list") \
                 .select("symbol", count="exact") \
