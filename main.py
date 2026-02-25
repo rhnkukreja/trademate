@@ -247,6 +247,8 @@ def build_dashboard_data(date_str: str):
                 b["status"] = "Target Hit"
             elif "SL" in exit_reason:
                 b["status"] = "SL Hit"
+            elif "Stagnant" in exit_reason:
+                b["status"] = "Circuit/Stagnant"
             elif "EOD" in exit_reason:
                 b["status"] = "EOD Exit"
             else:

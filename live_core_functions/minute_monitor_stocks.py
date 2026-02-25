@@ -312,6 +312,53 @@ def run_breakout_check(symbols, tier):
                 analysis_thread.daemon = True
                 analysis_thread.start()
 
+def check_stagnant_exits(now_str):
+    """Exits trades where price has hit a circuit or stopped moving."""
+    try:
+        # 1. Fetch all active trades for today
+        active_trades = supabase.table("live_breakouts") \
+            .select("id, symbol, last_price_checked, stagnant_count, breakout_price") \
+            .eq("breakout_date", now_str) \
+            .is_("exit_reason", None) \
+            .execute()
+
+        if not active_trades.data:
+            return
+
+        # 2. Get live quotes for all active symbols
+        symbols = [f"NSE:{t['symbol']}" for t in active_trades.data]
+        quotes = kite.quote(symbols)
+
+        for trade in active_trades.data:
+            symbol = trade['symbol']
+            q = quotes.get(f"NSE:{symbol}")
+            if not q: continue
+
+            current_ltp = q['last_price']
+            last_ltp = trade['last_price_checked']
+            count = trade['stagnant_count'] or 0
+
+            # 3. Check if price is stagnant
+            if last_ltp is not None and current_ltp == last_ltp:
+                count += 1
+                logger.info(f"⚠️ {symbol} is stagnant. Count: {count}/3 (LTP: {current_ltp})")
+            else:
+                count = 0 # Reset if price moves
+
+            if count >= 3:
+                logger.info(f"🛑 EXIT: {symbol} hit stagnant/circuit limit at {current_ltp}")
+                from live_core_functions.live_paper_trader import finalize_trade
+                finalize_trade(symbol, current_ltp, "Stagnant/Circuit Exit")
+                continue
+
+            # 4. Update tracking columns
+            supabase.table("live_breakouts").update({
+                "last_price_checked": current_ltp,
+                "stagnant_count": count
+            }).eq("id", trade['id']).execute()
+
+    except Exception as e:
+        logger.error(f"Error in stagnant check: {e}")
 
 def start_finding_breakouts():
     """Main monitoring loop with non-blocking Slow Tier."""
@@ -351,7 +398,11 @@ def start_finding_breakouts():
             logger.info("Market closed. Sleeping...")
             time_module.sleep(600)
             continue
-        
+
+        # 0. STAGNANT CHECK: Run every minute
+        if last_fast_check is None or (now - last_fast_check).seconds >= 60:
+            check_stagnant_exits(today.strftime("%Y-%m-%d"))
+            
         # 1. FAST TIER: Run immediately in main thread (High Priority)
         if last_fast_check is None or (now - last_fast_check).seconds >= 60:
             fast_stocks = get_stocks_by_tier("fast", today)
