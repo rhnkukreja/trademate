@@ -1,13 +1,13 @@
 import datetime
 import pandas as pd
 import numpy as np
-from multiprocessing import Pool, cpu_count
 import time
 import gc
 from utils.common import supabase, kite, logger, batch_upsert_supabase, next_price_above
 import io
 import requests
 from utils.news_agent import get_stock_news
+from concurrent.futures import ThreadPoolExecutor
 
 # -------------------------- Helper Functions -------------------------
 def get_kite_token_map():
@@ -18,6 +18,17 @@ def get_kite_token_map():
         if ins.get("instrument_token")
     }
 
+def get_derivative_symbols():
+    """Fetches all symbols currently available in the F&O segment."""
+    try:
+        # Fetching NFO instruments to see which symbols have derivatives
+        nfo_ins = kite.instruments("NFO")
+        # Use a set for O(1) lookup speed
+        return {ins["tradingsymbol"] for ins in nfo_ins}
+    except Exception as e:
+        logger.error(f"Failed to fetch NFO instruments: {e}")
+        return set()
+    
 def get_all_nse_symbols():
     """Fetch all active NSE mainboard EQ symbols directly from official NSE CSV."""
     logger.info("Fetching NSE symbol list...")
@@ -44,7 +55,9 @@ def get_all_nse_symbols():
             else:
                 logger.error(f"All retries failed to fetch symbol list: {e}")
                 return []  # Return empty on final failure
-    
+            
+    # Get the list of F&O symbols        
+    fno_symbols = get_derivative_symbols()
     # Clean and filter
     df.columns = df.columns.str.strip()
     df = df[df['SERIES'] == 'EQ']
@@ -67,7 +80,8 @@ def get_all_nse_symbols():
         enriched_symbols.append({
             "symbol": s["symbol"],
             "instrument_token": token,
-            "tick_size": s.get("tick_size", 0.05)
+            "tick_size": s.get("tick_size", 0.05),
+            "has_derivative": s["symbol"] in fno_symbols
         })
 
     logger.info(f"Symbols dropped due to missing Kite token: {missing_tokens}")
@@ -168,7 +182,7 @@ def preload_daily_data(stocks, from_date, to_date):
                     time.sleep(wait_time) 
                 else:
                     logger.error(f"Failed to fetch daily for {symbol}: {e}")
-        time.sleep(0.15) # Respect Kite rate limit
+        time.sleep(0.05) # Respect Kite rate limit
     return data_dict
 
 def preload_hourly_data(stocks, from_date, to_date):
@@ -195,7 +209,7 @@ def preload_hourly_data(stocks, from_date, to_date):
                     time.sleep(wait_time) 
                 else:
                     logger.error(f"Failed to fetch hourly for {symbol}: {e}")
-        time.sleep(0.15)
+        time.sleep(0.05)
     return data_dict
 
 def precompute_mas(data_dict, stocks, today_open_prices):
@@ -311,9 +325,19 @@ def process_batch(batch_info):
         surviving_stocks.append(stock)
         daily_mas_cache[symbol] = daily_mas
 
+    surviving_set = {s["symbol"] for s in surviving_stocks}
+    for sym in list(daily_data_dict.keys()):
+        if sym not in surviving_set:
+            del daily_data_dict[sym]
+    gc.collect()
+
     # --- OPTIMIZATION 3: HOURLY FETCH ONLY FOR SURVIVORS ---
     # This is where the real time-saving happens.
     hourly_data_dict = preload_hourly_data(surviving_stocks, from_date, yesterday)
+
+    surviving_symbols = [s["symbol"] for s in surviving_stocks]
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        news_map = dict(zip(surviving_symbols, executor.map(get_stock_news, surviving_symbols)))
 
     for stock in surviving_stocks:
         symbol = stock["symbol"]
@@ -365,7 +389,7 @@ def process_batch(batch_info):
         avg_range = float(df_hist_10["range_pct"].mean())
 
         rsi_at_entry = calculate_rsi(df_daily["close"]).iloc[-1] if len(df_daily) >= 15 else None
-        stock_news = get_stock_news(symbol)
+        stock_news = news_map.get(symbol)
 
         monitor_entry = {
             "symbol": symbol,
@@ -394,7 +418,8 @@ def process_batch(batch_info):
             "rsi_at_entry": float(rsi_at_entry) if pd.notna(rsi_at_entry) else None,
             "is_bb_squeeze": bool(is_bb_squeeze),
             "avg_intraday_range_pct_10d": avg_range,
-            "monitor_entry_time": datetime.datetime.combine(to_date, datetime.time(9, 15)).isoformat()
+            "monitor_entry_time": datetime.datetime.combine(to_date, datetime.time(9, 15)).isoformat(),
+            "has_derivative": bool(stock.get("has_derivative", False)),
         }
         print(f"✅ FOUND: {symbol} | Open: {current_open} | MinMA: {min_ma:.2f}")
         monitor_list.append(monitor_entry)
@@ -427,7 +452,7 @@ def create_monitor_list():
     
 
     # 4. Process Sequentially in Small Batches (Reduced to 50 for RAM safety)
-    batch_size = 50 
+    batch_size = 100
     total_stocks = len(stocks)
     total_batches = (total_stocks + batch_size - 1) // batch_size
     

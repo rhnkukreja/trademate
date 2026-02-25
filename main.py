@@ -163,7 +163,7 @@ def build_dashboard_data(date_str: str):
     # 3. Fast tier count + symbols
     try:
         r = supabase.table("monitor_list") \
-            .select("symbol, max_ma, tick_size", count="exact") \
+            .select("symbol,has_derivative, max_ma, tick_size", count="exact") \
             .eq("date", date_str) \
             .eq("monitoring_tier", "fast") \
             .execute()
