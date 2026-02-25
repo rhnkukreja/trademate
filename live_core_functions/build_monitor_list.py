@@ -145,76 +145,57 @@ def calculate_bb_squeeze(df, period=20, std_dev=2, kc_period=20, kc_atr_mult=1.5
         return bb_width.iloc[-1] < kc_width
     return False
 
-def preload_stock_data(stocks, from_date, to_date):
-    """Preloads historical daily and hourly data using direct API calls."""
+def preload_daily_data(stocks, from_date, to_date):
+    """Fetches ONLY daily data."""
     data_dict = {}
-    nifty_token = None
-    
-    # 1. Identify Nifty Token
-    for ins in kite.instruments("NSE"):
-        if ins["tradingsymbol"] == "NIFTY 50":
-            nifty_token = ins["instrument_token"]
-            break
-    
-    def fetch_kite_data_simple(instrument_token, symbol, start_date, end_date, interval):
-        """Simple retry wrapper for Kite API"""
-        retries = 3
-        for attempt in range(retries):
-            try:
-                data = kite.historical_data(
-                    instrument_token=instrument_token,
-                    from_date=start_date,
-                    to_date=end_date,
-                    interval=interval
-                )
-                if not data:
-                    return pd.DataFrame()
-                
-                df = pd.DataFrame(data)
-                df = df.rename(columns={"date": "date", "open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume"})
-                df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
-                return df[["date", "open", "high", "low", "close", "volume"]]
-                
-            except Exception as e:
-                # 429 means too many requests - wait longer
-                wait_time = 1 if "429" not in str(e) else 2
-                if attempt < retries - 1:
-                    time.sleep(wait_time) 
-                else:
-                    logger.error(f"Failed to fetch {interval} for {symbol}: {e}")
-                    return pd.DataFrame()
-
     for stock in stocks:
         symbol = stock["symbol"]
         token = stock["instrument_token"]
         
-        # --- OPTIMIZATION 1: Fetch Daily Data ---
-        df_daily = fetch_kite_data_simple(token, symbol, from_date, to_date, "day")
-        if df_daily.empty:
-            continue
+        retries = 3
+        for attempt in range(retries):
+            try:
+                data = kite.historical_data(instrument_token=token, from_date=from_date, to_date=to_date, interval="day")
+                if data:
+                    df = pd.DataFrame(data)
+                    df = df.rename(columns={"date": "date", "open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume"})
+                    df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
+                    data_dict[symbol] = df[["date", "open", "high", "low", "close", "volume"]]
+                break
+            except Exception as e:
+                wait_time = 1 if "429" not in str(e) else 2
+                if attempt < retries - 1:
+                    time.sleep(wait_time) 
+                else:
+                    logger.error(f"Failed to fetch daily for {symbol}: {e}")
+        time.sleep(0.15) # Respect Kite rate limit
+    return data_dict
 
-        # --- OPTIMIZATION 2: Fetch 60minute Data Directly ---
-        # Kite allows fetching ~2000 candles in one go. 
-        # 365 days * 7 trading hours = ~2500 candles. 
-        # If your from_date is < 200 days ago, 1 call is enough.
-        # If > 200 days, we might need a small chunk, but usually 1 call covers recent history.
+def preload_hourly_data(stocks, from_date, to_date):
+    """Fetches ONLY hourly data for stocks that survived the daily filter."""
+    data_dict = {}
+    hourly_start = max(from_date, to_date - datetime.timedelta(days=100))
+    for stock in stocks:
+        symbol = stock["symbol"]
+        token = stock["instrument_token"]
         
-        # We limit hourly fetch to last 200 days to be safe and fast
-        # (You only need 200MA, so 200 hourly candles is roughly 30 trading days)
-        hourly_start = max(from_date, to_date - datetime.timedelta(days=100)) 
-        
-        df_hourly = fetch_kite_data_simple(token, symbol, hourly_start, to_date, "60minute")
-        
-        # Standardize columns
-        if not df_hourly.empty:
-             df_hourly = df_hourly.sort_values(by="date").drop_duplicates(subset="date").reset_index(drop=True)
-
-        data_dict[symbol] = {"daily": df_daily, "hourly": df_hourly}
-        
-        # IMPORTANT: Small sleep to respect Kite's 3 requests/second limit
-        # Since we are running in Multiprocessing, this helps prevent collisions
+        retries = 3
+        for attempt in range(retries):
+            try:
+                data = kite.historical_data(instrument_token=token, from_date=hourly_start, to_date=to_date, interval="60minute")
+                if data:
+                    df = pd.DataFrame(data)
+                    df = df.rename(columns={"date": "date", "open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume"})
+                    df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
+                    data_dict[symbol] = df.sort_values(by="date").drop_duplicates(subset="date").reset_index(drop=True)[["date", "open", "high", "low", "close", "volume"]]
+                break
+            except Exception as e:
+                wait_time = 1 if "429" not in str(e) else 2
+                if attempt < retries - 1:
+                    time.sleep(wait_time) 
+                else:
+                    logger.error(f"Failed to fetch hourly for {symbol}: {e}")
         time.sleep(0.15)
-
     return data_dict
 
 def precompute_mas(data_dict, stocks, today_open_prices):
@@ -248,15 +229,10 @@ def precompute_mas(data_dict, stocks, today_open_prices):
     return ma_dict
 
 def process_batch(batch_info):
-    """
-    Processes a batch of stocks.
-    Includes logic to handle 'missing' daily rows by using the last available data.
-    """
     batch_stocks, batch_idx, total_batches, from_date, to_date, auth_token = batch_info
     yesterday = to_date - datetime.timedelta(days=1)
 
-    # 1. AUTHENTICATE KITE IN SUBPROCESS
-    # This ensures every worker process has a valid login session
+    # 1. AUTHENTICATE KITE
     if hasattr(kite, "set_access_token"):
         kite.set_access_token(auth_token)
     elif hasattr(kite, "enctoken"):
@@ -265,205 +241,162 @@ def process_batch(batch_info):
             kite.headers["Authorization"] = f"enctoken {auth_token}"
 
     logger.info(f"Processing batch {batch_idx}/{total_batches}...")
-    symbols = [s["symbol"] for s in batch_stocks]
     monitor_list = []
-
-    # Preload Data
-    data_dict = preload_stock_data(batch_stocks, from_date, yesterday)
-    if not data_dict:
-        return []
     
+    # --- OPTIMIZATION 1: QUOTES FIRST ---
+    # We only care about stocks that have valid live prices.
+    symbols = [s["symbol"] for s in batch_stocks]
     try:
         quote_keys = [f"NSE:{s}" for s in symbols]
         raw_quotes = kite.quote(quote_keys)
-
-        # Clean up quote keys (remove 'NSE:')
+        
         quotes = {}
-        for k, v in raw_quotes.items():
-            # Try different possible field names
-            last_price = v.get("last_price") or v.get("ltp") or v.get("last_traded_price")
-            open_price = v.get("open") or v.get("ohlc", {}).get("open")
+        valid_stocks = []
+        for stock in batch_stocks:
+            sym = stock["symbol"]
+            q_data = raw_quotes.get(f"NSE:{sym}", {})
+            last_price = q_data.get("last_price") or q_data.get("ltp")
+            open_price = q_data.get("open") or q_data.get("ohlc", {}).get("open")
             
             if last_price and open_price and open_price > 0:
-                symbol = k.split(":")[1] if ":" in k else k
-                quotes[symbol] = {
-                    "last_price": last_price,
-                    "open": open_price
-                }
-        today_open_prices = {symbol: quotes.get(symbol, {}).get("open", 0) for symbol in symbols}
-        
-        if not quotes:
-            logger.warning(f"Batch {batch_idx}: No valid quotes received - skipping batch")
+                quotes[sym] = {"last_price": last_price, "open": open_price}
+                valid_stocks.append(stock)
+                
+        if not valid_stocks:
             return monitor_list
-            
     except Exception as e:
         logger.error(f"Batch {batch_idx}: Failed to fetch quotes: {e}")
         return monitor_list
 
-    ma_dict = precompute_mas(data_dict, batch_stocks, today_open_prices)
-
-    token_map = {ins["tradingsymbol"]: ins["instrument_token"] for ins in kite.instruments("NSE")}
-
-    for stock in batch_stocks:
+    # --- OPTIMIZATION 2: DAILY FILTER ---
+    # Fetch Daily data ONLY to check the Slingshot condition.
+    daily_data_dict = preload_daily_data(valid_stocks, from_date, yesterday)
+    
+    surviving_stocks = []
+    daily_mas_cache = {}
+    
+    for stock in valid_stocks:
         symbol = stock["symbol"]
-        
-        # 1. Basic Data Integrity Checks
-        if (symbol not in data_dict or 
-            symbol not in ma_dict or 
-            symbol not in quotes or 
-            symbol not in token_map):
+        if symbol not in daily_data_dict:
             continue
-
-        daily_mas_df = ma_dict[symbol]["daily"]
-        
-        # --- ROBUSTNESS FIX ---
-        # Instead of failing if "Today's" row is missing, we take the LAST AVAILABLE row.
-        # This represents the most recent valid Moving Average levels.
-        if daily_mas_df.empty:
-            continue
-        
-        # Ensure we're using TODAY's MA values (not yesterday's stale data)
-        today_rows = daily_mas_df[daily_mas_df["date"].dt.date == to_date]
-        if today_rows.empty:
-            # Fallback to most recent if today's data isn't available yet
-            daily_row = daily_mas_df.iloc[-1]
-            if (to_date - daily_row["date"].date()).days > 1:  # Changed from 5 to 1
-                continue
-        else:
-            daily_row = today_rows.iloc[-1]
-
-        # 2. Calculate MAs (Ignore NaNs for young stocks)
-        hourly_mas_df = ma_dict[symbol]["hourly"]
-        last_hourly_row = hourly_mas_df.iloc[-1] if not hourly_mas_df.empty else None
-
-        # STRICT MA VALIDATION
-        mas = {}
-
-        # Daily MAs
-        for p in [20, 50, 100, 200]:
-            val = daily_row.get(f"ma{p}")
-            if pd.isna(val) or val <= 0:
-                mas = {}
-                break
-            mas[f"ma{p}_daily"] = float(val)
-
-        # Hourly MAs
-        if mas and last_hourly_row is not None:
-            for p in [20, 50, 100, 200]:
-                val = last_hourly_row.get(f"ma{p}")
-                if pd.isna(val) or val <= 0:
-                    mas = {}
-                    break
-                mas[f"ma{p}_hourly"] = float(val)
-
-        # ❌ Reject stock if ALL 8 MAs not present
-        if len(mas) != 8:
-            continue
-
-        min_ma = min(mas.values())
-        max_ma = max(mas.values())
-
-        # 3. Get Previous Day Data (for Pivots & Dip Check)
-        # We need historical context. If we only have 1 row, we can't do much.
-        df_daily = data_dict[symbol]["daily"]
-        if len(df_daily) < 2:
-            continue
-        
-        prev_day_rows = df_daily[df_daily["date"].dt.date < datetime.date.today()]
-        if prev_day_rows.empty:
-            continue
-        prev_day = prev_day_rows.iloc[-1]
-
-        # 4. Live Data
-        current_ltp = quotes[symbol]["last_price"]
+            
+        df_daily = daily_data_dict[symbol]
         current_open = quotes[symbol]["open"]
         
-        # --- SLINGSHOT LOGIC ---
+        # Calculate Daily MAs including today's open
+        prices = df_daily["close"].tolist()
+        prices.append(current_open)
+        price_series = pd.Series(prices)
+        
+        daily_mas = []
+        is_valid = True
+        for p in [20, 50, 100, 200]:
+            if len(price_series) >= p:
+                ma_val = price_series.rolling(window=p).mean().iloc[-1]
+                if pd.isna(ma_val) or ma_val <= 0:
+                    is_valid = False
+                    break
+                daily_mas.append(float(ma_val))
+            else:
+                is_valid = False
+                break
+                
+        if not is_valid:
+            continue
+            
+        # MATH FILTER: If open >= min(daily MAs), it can't be a Slingshot.
+        if current_open >= min(daily_mas):
+            continue 
+            
+        surviving_stocks.append(stock)
+        daily_mas_cache[symbol] = daily_mas
 
-        # B. DIP CONDITION - STRICTLY Open Price Only
-        # 1. If Open Price is missing/invalid, SKIP the stock completely.
-        if current_open is None or current_open <= 0:
+    # --- OPTIMIZATION 3: HOURLY FETCH ONLY FOR SURVIVORS ---
+    # This is where the real time-saving happens.
+    hourly_data_dict = preload_hourly_data(surviving_stocks, from_date, yesterday)
+
+    for stock in surviving_stocks:
+        symbol = stock["symbol"]
+        if symbol not in hourly_data_dict:
+            continue
+            
+        df_hourly = hourly_data_dict[symbol]
+        current_open = quotes[symbol]["open"]
+        current_ltp = quotes[symbol]["last_price"]
+        
+        # Calculate Hourly MAs including today's open
+        h_prices = df_hourly["close"].tolist()
+        h_prices.append(current_open)
+        h_price_series = pd.Series(h_prices)
+        
+        hourly_mas = []
+        is_valid = True
+        for p in [20, 50, 100, 200]:
+            if len(h_price_series) >= p:
+                ma_val = h_price_series.rolling(window=p).mean().iloc[-1]
+                if pd.isna(ma_val) or ma_val <= 0:
+                    is_valid = False
+                    break
+                hourly_mas.append(float(ma_val))
+            else:
+                is_valid = False
+                break
+        
+        if not is_valid:
             continue
 
-        # 2. If Open Price is NOT below the Lowest MA, SKIP.
+        # Final MA Check
+        all_mas = daily_mas_cache[symbol] + hourly_mas
+        min_ma = min(all_mas)
+        
         if current_open >= min_ma:
             continue
-        # -----------------------
 
-        # 5. Build Entry
+        # Stock is valid! Build final entry
+        df_daily = daily_data_dict[symbol]
+        prev_day = df_daily.iloc[-1]
         pivots = calculate_pivots(prev_day["high"], prev_day["low"], prev_day["close"])
         recent_daily = df_daily.tail(20)
         atr_14 = calculate_atr(recent_daily)
-        if pd.isna(atr_14):
-            continue
-        avg_daily_vol_20 = recent_daily["volume"].mean()
+        
+        is_bb_squeeze = calculate_bb_squeeze(df_daily.tail(30)) if len(df_daily) >= 30 else False
+        df_hist_10 = df_daily.tail(10).copy()
+        df_hist_10["range_pct"] = ((df_hist_10["high"] - df_hist_10["low"]) / df_hist_10["low"]) * 100
+        avg_range = float(df_hist_10["range_pct"].mean())
 
-        # --- Extra context for AI / algo ---
-        df_daily_history = df_daily[df_daily["date"].dt.date < to_date].copy()
-
-        # BB squeeze flag (last ~30 days)
-        if len(df_daily_history) >= 30:
-            is_bb_squeeze = calculate_bb_squeeze(df_daily_history.tail(30))
-        else:
-            is_bb_squeeze = False
-
-        if len(df_daily_history) < 10:
-            continue
-
-        df_hist_10 = df_daily_history.tail(10).copy()
-        df_hist_10["range_pct"] = (
-            (df_hist_10["high"] - df_hist_10["low"]) / df_hist_10["low"]
-        ) * 100
-
-        avg_intraday_range_pct_10d = float(df_hist_10["range_pct"].mean())
-
-
-        # Calculate RSI when stock was added to monitor list (pre-market, using yesterday's close as latest)
-        rsi_at_entry = None
-        if len(df_daily) >= 15:  # Need at least 14 + current
-            rsi_series = calculate_rsi(df_daily["close"])
-            rsi_at_entry = rsi_series.iloc[-1]
-
-        print(f"✅ FOUND: {symbol} | Price: {current_ltp} | Open: {current_open} | MinMA: {min_ma:.2f}")
-
+        rsi_at_entry = calculate_rsi(df_daily["close"]).iloc[-1] if len(df_daily) >= 15 else None
         stock_news = get_stock_news(symbol)
-        if stock_news is None:
-            stock_news = None
-
-        today = to_date
-
-        monitor_entry_time = datetime.datetime.combine(today, datetime.time(9, 15))
 
         monitor_entry = {
             "symbol": symbol,
-            "date": datetime.date.today().strftime("%Y-%m-%d"), # Always save as Today's list
+            "date": datetime.date.today().strftime("%Y-%m-%d"),
             "latest_news": stock_news,
             "open_price": float(current_open),
             "current_price": float(current_ltp),
             "min_ma": float(min_ma),
-            "max_ma": float(max_ma),
+            "max_ma": float(max(all_mas)),
             "monitoring_tier": "slow",
             "tick_size": float(stock["tick_size"]),
-            "ma20_daily": float(daily_row["ma20"]) if pd.notna(daily_row["ma20"]) else None,
-            "ma50_daily": float(daily_row["ma50"]) if pd.notna(daily_row["ma50"]) else None,
-            "ma100_daily": float(daily_row["ma100"]) if pd.notna(daily_row["ma100"]) else None,
-            "ma200_daily": float(daily_row["ma200"]) if pd.notna(daily_row["ma200"]) else None,
-            "ma20_hourly": float(last_hourly_row["ma20"]) if last_hourly_row is not None and pd.notna(last_hourly_row["ma20"]) else None,
-            "ma50_hourly": float(last_hourly_row["ma50"]) if last_hourly_row is not None and pd.notna(last_hourly_row["ma50"]) else None,
-            "ma100_hourly": float(last_hourly_row["ma100"]) if last_hourly_row is not None and pd.notna(last_hourly_row["ma100"]) else None,
-            "ma200_hourly": float(last_hourly_row["ma200"]) if last_hourly_row is not None and pd.notna(last_hourly_row["ma200"]) else None,
+            "ma20_daily": daily_mas_cache[symbol][0],
+            "ma50_daily": daily_mas_cache[symbol][1],
+            "ma100_daily": daily_mas_cache[symbol][2],
+            "ma200_daily": daily_mas_cache[symbol][3],
+            "ma20_hourly": hourly_mas[0],
+            "ma50_hourly": hourly_mas[1],
+            "ma100_hourly": hourly_mas[2],
+            "ma200_hourly": hourly_mas[3],
             "prev_day_high": float(prev_day["high"]),
             "prev_day_low": float(prev_day["low"]),
             "prev_day_close": float(prev_day["close"]),
             "pivot_points": pivots,
             "atr_14": float(atr_14) if pd.notna(atr_14) else None,
-            "avg_daily_vol_20d": float(avg_daily_vol_20),
+            "avg_daily_vol_20d": float(recent_daily["volume"].mean()),
             "rsi_at_entry": float(rsi_at_entry) if pd.notna(rsi_at_entry) else None,
             "is_bb_squeeze": bool(is_bb_squeeze),
-            "avg_intraday_range_pct_10d": float(avg_intraday_range_pct_10d) if avg_intraday_range_pct_10d is not None and not pd.isna(avg_intraday_range_pct_10d) else None,
-            "monitor_entry_time": monitor_entry_time.isoformat()
+            "avg_intraday_range_pct_10d": avg_range,
+            "monitor_entry_time": datetime.datetime.combine(to_date, datetime.time(9, 15)).isoformat()
         }
-
+        print(f"✅ FOUND: {symbol} | Open: {current_open} | MinMA: {min_ma:.2f}")
         monitor_list.append(monitor_entry)
 
     return monitor_list

@@ -214,14 +214,33 @@ def build_dashboard_data(date_str: str):
         result["fast_tier_count"] = 0
         result["fast_tier_symbols"] = []
 
-    # 4. Breakout details
+    # 4. Breakout details with Live Price fetching
     try:
         r = supabase.table("live_breakouts") \
             .select("symbol, breakout_price, breakout_time, percent_move, high_price, exit_reason") \
             .eq("breakout_date", date_str) \
             .execute()
 
-        result["breakouts"] = r.data or []
+        breakouts_data = r.data or []
+        
+        # --- NEW: Fetch live prices for these breakouts ---
+        if breakouts_data:
+            breakout_symbols = [f"NSE:{b['symbol']}" for b in breakouts_data]
+            try:
+                # Fetch quotes from Kite for all breakout stocks
+                live_quotes = kite.quote(breakout_symbols)
+                
+                for b in breakouts_data:
+                    sym_key = f"NSE:{b['symbol']}"
+                    if sym_key in live_quotes:
+                        # Add current_price to the object sent to frontend
+                        b["current_price"] = live_quotes[sym_key].get("last_price")
+                    else:
+                        b["current_price"] = b["breakout_price"] # Fallback
+            except Exception as e:
+                print(f"⚠️ Failed to fetch live prices for breakouts: {e}")
+
+        result["breakouts"] = breakouts_data
         for b in result["breakouts"]:
             exit_reason = b.get("exit_reason") or ""
             if "Target" in exit_reason:
@@ -230,13 +249,12 @@ def build_dashboard_data(date_str: str):
                 b["status"] = "SL Hit"
             elif "EOD" in exit_reason:
                 b["status"] = "EOD Exit"
-            elif b.get("percent_move") is not None:
-                b["status"] = "In Play"
             else:
                 b["status"] = "In Play"
         result["breakout_count"] = len(result["breakouts"])
 
-    except Exception:
+    except Exception as e:
+        print(f"❌ Error building breakout dashboard: {e}")
         result["breakouts"] = []
         result["breakout_count"] = 0
 
