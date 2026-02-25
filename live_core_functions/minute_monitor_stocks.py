@@ -351,11 +351,11 @@ def check_stagnant_exits(now_str):
                 finalize_trade(symbol, current_ltp, "Stagnant/Circuit Exit")
                 continue
 
-            # 4. Update tracking columns
+            # 4. Update tracking columns using symbol and date as the unique identifier
             supabase.table("live_breakouts").update({
                 "last_price_checked": current_ltp,
                 "stagnant_count": count
-            }).eq("id", trade['id']).execute()
+            }).eq("symbol", symbol).eq("breakout_date", now_str).execute()
 
     except Exception as e:
         logger.error(f"Error in stagnant check: {e}")
