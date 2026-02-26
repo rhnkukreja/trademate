@@ -56,12 +56,19 @@ def get_ist_time():
 def get_active_token():
     """Fetches the latest token from Supabase or falls back to env."""
     try:
-        if supabase:
-            res = supabase.table("kite_config").select("value").eq("key_name", "access_token").execute()
+        # Explicitly check for the supabase object
+        if supabase is not None:
+            res = supabase.table("kite_config") \
+                .select("value") \
+                .eq("key_name", "access_token") \
+                .execute()
+            
             if res.data and len(res.data) > 0:
                 return res.data[0]["value"]
     except Exception as e:
         logger.warning(f"Could not fetch token from Supabase: {e}")
+    
+    # Fallback to .env if DB query fails or returns nothing
     return os.getenv("KITE_ACCESS_TOKEN")
 
 # -------------------------- Client Initialization --------------------------
@@ -229,5 +236,7 @@ def load_token_map():
         instruments = kite.instruments("NSE")
         token_map = {ins["tradingsymbol"]: ins["instrument_token"] for ins in instruments}
         logger.info(f"Loaded {len(token_map)} NSE instrument tokens.")
+        return token_map
     except Exception as e:
         logger.error(f"Failed to load token map: {e}")
+        return {}

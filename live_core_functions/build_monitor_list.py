@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import time
 import gc
-from utils.common import supabase, kite, logger, batch_upsert_supabase, next_price_above
+from utils.common import supabase, kite, logger, batch_upsert_supabase, next_price_above, get_active_token
 import io
 import requests
 from utils.news_agent import get_stock_news
@@ -430,15 +430,17 @@ def create_monitor_list():
     """Builds monitor list sequentially to save memory on Render."""
     logger.info("Starting Memory-Optimized Monitor List Builder...")
     
-    # 1. Get Auth Token
-    try:
-        auth_token = kite.access_token
-    except AttributeError:
-        try:
-            auth_token = kite.enctoken
-        except AttributeError:
-            logger.error("Could not find access_token or enctoken on kite object.")
-            return
+    logger.info("Starting Memory-Optimized Monitor List Builder...")
+    
+    # 🔄 FORCE SYNC TOKEN FROM DB BEFORE STARTING
+    auth_token = get_active_token()
+    
+    if not auth_token:
+        logger.error("❌ No token available in DB. Monitor list build aborted.")
+        return
+
+    # Update the global kite client instance
+    kite.set_access_token(auth_token)
 
     # 2. Set Dates (Target = Today)
     analysis_date = datetime.date.today()

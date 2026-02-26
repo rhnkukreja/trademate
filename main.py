@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import gspread
 import base64
 import json
-from utils.common import supabase
+from utils.common import supabase, logger
 from datetime import date, datetime
 from utils.refresh_token import get_kite_access_token, update_supabase_token
 from utils.common import kite
@@ -79,11 +79,19 @@ async def handle_find_breakouts(background_tasks: BackgroundTasks):
         try:
             today_str = date.today().strftime("%Y-%m-%d")
 
-            token_response = supabase.table("kite_config").select("value").eq("key_name", "access_token").limit(1).execute()
-            if token_response.data:
-                kite.set_access_token(token_response.data[0]["value"])
+            # 🔄 RE-FETCH AND FORCE SET TOKEN
+            token_response = supabase.table("kite_config") \
+                .select("value") \
+                .eq("key_name", "access_token") \
+                .execute()
+
+            if token_response.data and len(token_response.data) > 0:
+                new_token = token_response.data[0]["value"]
+                kite.set_access_token(new_token)
+                logger.info(f"✅ Token synced from DB (starts with {new_token[:5]}...)")
             else:
-                print("⚠️ Warning: No access token found in Supabase.")
+                logger.error("❌ CRITICAL: No access_token found in kite_config table.")
+                return # Stop the flow if no token exists
 
             # 1. Check/Build monitor list inside the background task
             existing = supabase.table("monitor_list") \

@@ -34,6 +34,7 @@ testing_agent.py
 tv_state.json
 logistic_breakout_model_2.pkl
 credentials.json
+derivative_perfomance.py
 
 # Ignore excel files
 *.xlsx
