@@ -4,9 +4,6 @@
 # Ignore all the log files
 *.log
 
-# Ignore the text files
-
-
 # Ignore the pycache
 __pycache__/
 

@@ -42,7 +42,7 @@ app.add_middleware(
 class PayloadRequest(BaseModel):
     token: str
 
-@app.post("/refresh-kite-session")
+@app.api_route("/refresh-kite-session", methods=["GET", "POST"])
 async def trigger_token_refresh(background_tasks: BackgroundTasks):
     """
     Endpoint for cron-job.org to refresh the Kite access token.
@@ -69,7 +69,7 @@ async def trigger_token_refresh(background_tasks: BackgroundTasks):
     background_tasks.add_task(task_with_retries)
     return {"status": "request_received", "message": "Token refresh started in background."}
 
-@app.post("/start-finding-breakouts")
+@app.api_route("/start-finding-breakouts", methods=["GET", "POST"])
 async def handle_find_breakouts(background_tasks: BackgroundTasks):
     """
     Triggers the build and monitor flow in the background to prevent 
