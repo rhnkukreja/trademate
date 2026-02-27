@@ -13,8 +13,5 @@ playwright
 fastapi
 pydantic
 uvicorn
-pyotp
 gspread
 oauth2client
-selenium
-webdriver-manager   

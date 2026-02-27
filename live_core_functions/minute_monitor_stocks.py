@@ -285,10 +285,13 @@ def run_breakout_check(symbols, tier):
             if not existing.data:
                 detection_time = datetime.now()
 
-                if detection_time <= SCRIPT_START_TIME:
-                    logger.info(f"⏭️ Skipping old breakout for {symbol} (before script start)")
+                start_time_naive = SCRIPT_START_TIME.replace(tzinfo=None) if hasattr(SCRIPT_START_TIME, 'replace') else SCRIPT_START_TIME
+                detection_time_naive = detection_time.replace(tzinfo=None)
+                
+                if (detection_time_naive - start_time_naive).total_seconds() < 300:
+                    logger.info(f"⏭️ Skipping old morning breakout for {symbol} (already past breakout point on startup)")
                     with TRADE_LOCK:
-                        PAPER_TRADES_TODAY.discard(symbol)  # Allow re-check next cycle
+                        PAPER_TRADES_TODAY.add(symbol)  # Mark as traded so we NEVER trigger it today
                     continue
 
                 logger.info(f"🎯 BREAKOUT DETECTED: {symbol} at {current_price}")

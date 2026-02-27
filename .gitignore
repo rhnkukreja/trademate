@@ -22,6 +22,7 @@ screenshots/
 
 # Ignore the venv folder
 tvenv/
+past_data_fetch/
 
 # Other files
 access_token_fetch.py

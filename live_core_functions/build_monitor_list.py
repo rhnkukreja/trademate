@@ -159,57 +159,86 @@ def calculate_bb_squeeze(df, period=20, std_dev=2, kc_period=20, kc_atr_mult=1.5
         return bb_width.iloc[-1] < kc_width
     return False
 
+def fetch_single_stock_daily(stock, from_date, to_date):
+    """Worker function to fetch daily data for a single stock."""
+    symbol = stock["symbol"]
+    token = stock["instrument_token"]
+    retries = 3
+    
+    for attempt in range(retries):
+        try:
+            # 3 workers sleeping 1s each = exactly 3 req/sec. NO 429 PENALTIES!
+            time.sleep(1.0)  
+            data = kite.historical_data(instrument_token=token, from_date=from_date, to_date=to_date, interval="day")
+            if data:
+                df = pd.DataFrame(data)
+                df = df.rename(columns={"date": "date", "open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume"})
+                df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
+                return symbol, df[["date", "open", "high", "low", "close", "volume"]]
+            return symbol, None
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(2) 
+            else:
+                logger.error(f"Failed to fetch daily for {symbol}: {e}")
+    return symbol, None
+
+def fetch_single_stock_hourly(stock, hourly_start, to_date):
+    """Worker function to fetch hourly data for a single stock."""
+    symbol = stock["symbol"]
+    token = stock["instrument_token"]
+    retries = 3
+    
+    for attempt in range(retries):
+        try:
+            # 3 workers sleeping 1s each = exactly 3 req/sec. NO 429 PENALTIES!
+            time.sleep(1.0)  
+            data = kite.historical_data(instrument_token=token, from_date=hourly_start, to_date=to_date, interval="60minute")
+            if data:
+                df = pd.DataFrame(data)
+                df = df.rename(columns={"date": "date", "open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume"})
+                df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
+                df = df.sort_values(by="date").drop_duplicates(subset="date").reset_index(drop=True)
+                return symbol, df[["date", "open", "high", "low", "close", "volume"]]
+            return symbol, None
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(2) 
+            else:
+                logger.error(f"Failed to fetch hourly for {symbol}: {e}")
+    return symbol, None
+
 def preload_daily_data(stocks, from_date, to_date):
-    """Fetches ONLY daily data."""
+    """Fetches ONLY daily data using ThreadPoolExecutor without nested functions."""
     data_dict = {}
-    for stock in stocks:
-        symbol = stock["symbol"]
-        token = stock["instrument_token"]
+    
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        # Submit all tasks to the thread pool
+        futures = [executor.submit(fetch_single_stock_daily, stock, from_date, to_date) for stock in stocks]
         
-        retries = 3
-        for attempt in range(retries):
-            try:
-                data = kite.historical_data(instrument_token=token, from_date=from_date, to_date=to_date, interval="day")
-                if data:
-                    df = pd.DataFrame(data)
-                    df = df.rename(columns={"date": "date", "open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume"})
-                    df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
-                    data_dict[symbol] = df[["date", "open", "high", "low", "close", "volume"]]
-                break
-            except Exception as e:
-                wait_time = 1 if "429" not in str(e) else 2
-                if attempt < retries - 1:
-                    time.sleep(wait_time) 
-                else:
-                    logger.error(f"Failed to fetch daily for {symbol}: {e}")
-        time.sleep(0.05) # Respect Kite rate limit
+        # Collect results as they finish
+        for future in futures:
+            symbol, df = future.result()
+            if df is not None:
+                data_dict[symbol] = df
+                
     return data_dict
 
 def preload_hourly_data(stocks, from_date, to_date):
-    """Fetches ONLY hourly data for stocks that survived the daily filter."""
+    """Fetches ONLY hourly data using ThreadPoolExecutor without nested functions."""
     data_dict = {}
     hourly_start = max(from_date, to_date - datetime.timedelta(days=100))
-    for stock in stocks:
-        symbol = stock["symbol"]
-        token = stock["instrument_token"]
+    
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        # Submit all tasks to the thread pool
+        futures = [executor.submit(fetch_single_stock_hourly, stock, hourly_start, to_date) for stock in stocks]
         
-        retries = 3
-        for attempt in range(retries):
-            try:
-                data = kite.historical_data(instrument_token=token, from_date=hourly_start, to_date=to_date, interval="60minute")
-                if data:
-                    df = pd.DataFrame(data)
-                    df = df.rename(columns={"date": "date", "open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume"})
-                    df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
-                    data_dict[symbol] = df.sort_values(by="date").drop_duplicates(subset="date").reset_index(drop=True)[["date", "open", "high", "low", "close", "volume"]]
-                break
-            except Exception as e:
-                wait_time = 1 if "429" not in str(e) else 2
-                if attempt < retries - 1:
-                    time.sleep(wait_time) 
-                else:
-                    logger.error(f"Failed to fetch hourly for {symbol}: {e}")
-        time.sleep(0.05)
+        # Collect results as they finish
+        for future in futures:
+            symbol, df = future.result()
+            if df is not None:
+                data_dict[symbol] = df
+                
     return data_dict
 
 def precompute_mas(data_dict, stocks, today_open_prices):

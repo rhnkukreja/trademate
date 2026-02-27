@@ -14,7 +14,6 @@ import base64
 import json
 from utils.common import supabase, logger
 from datetime import date, datetime
-from utils.refresh_token import get_kite_access_token, update_supabase_token
 from utils.common import kite
 
 creds_b64 = os.getenv("GOOGLE_SHEET_CREDS_B64")
@@ -41,33 +40,6 @@ app.add_middleware(
 
 class PayloadRequest(BaseModel):
     token: str
-
-@app.api_route("/refresh-kite-session", methods=["GET", "POST"])
-async def trigger_token_refresh(background_tasks: BackgroundTasks):
-    """
-    Endpoint for cron-job.org to refresh the Kite access token.
-    Runs in background to avoid cron-job.org timeout.
-    """
-    def task_with_retries():
-        max_retries = 5
-        for attempt in range(1, max_retries + 1):
-            try:
-                print("🔄 Automation: Starting headless login...")
-                new_token = get_kite_access_token()
-                update_supabase_token(new_token)
-                kite.set_access_token(new_token)
-                print("✅ Automation: Token refresh successful.")
-            except Exception as e:
-                print(f"❌ Automation: Refresh failed: {e}")
-                if attempt < max_retries:
-                    wait_time = attempt * 30 # Wait 30s, 60s, 90s...
-                    print(f"🕒 Waiting {wait_time} seconds before next retry...")
-                    time.sleep(wait_time)
-                else:
-                    print("❌ Automation: All 5 refresh attempts failed.")
-
-    background_tasks.add_task(task_with_retries)
-    return {"status": "request_received", "message": "Token refresh started in background."}
 
 @app.api_route("/start-finding-breakouts", methods=["GET", "POST"])
 async def handle_find_breakouts(background_tasks: BackgroundTasks):
