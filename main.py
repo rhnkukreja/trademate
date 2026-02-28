@@ -1,7 +1,4 @@
-import requests
-import uvicorn
 import os
-import time
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 import httpx
 from pydantic import BaseModel
@@ -15,6 +12,9 @@ import json
 from utils.common import supabase, logger
 from datetime import date, datetime
 from utils.common import kite
+from fastapi import WebSocket, WebSocketDisconnect
+from utils.options_streamer import ws_manager, start_kite_ticker
+from utils.options_streamer import ACTIVE_OPTION_TRADES
 
 creds_b64 = os.getenv("GOOGLE_SHEET_CREDS_B64")
 
@@ -40,6 +40,70 @@ app.add_middleware(
 
 class PayloadRequest(BaseModel):
     token: str
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info("🚀 Starting FastAPI Server & Initializing KiteTicker...")
+    start_kite_ticker()
+
+@app.post("/api/place-option-order")
+async def place_option_order(data: dict):
+    symbol = data.get("symbol")
+    price = data.get("price")
+    qty = data.get("quantity", 50)
+    side = data.get("side", "BUY")
+    
+    # Calculate 1:2 Risk-Reward
+    sl = round(price * 0.99, 2) if side == "BUY" else round(price * 1.01, 2)
+    target = round(price * 1.02, 2) if side == "BUY" else round(price * 0.98, 2)
+
+    # 1. Update In-Memory Monitor for live auto-exit logic
+    ACTIVE_OPTION_TRADES[symbol] = {
+        "entry": price, "qty": qty, "type": side, "sl": sl, "target": target
+    }
+
+    # 2. Save to Supabase via Python
+    trade_record = {
+        "symbol": symbol, "entry_price": price, "quantity": qty,
+        "side": side, "status": "OPEN", "sl_price": sl, "target_price": target,
+        "created_at": datetime.now().isoformat()
+    }
+    supabase.table("paper_trades").insert(trade_record).execute()
+    
+    return {"status": "success"}
+
+@app.get("/api/get-active-trades")
+async def get_active_trades():
+    """Provides the UI with active trades from Supabase."""
+    try:
+        response = supabase.table("paper_trades").select("*").eq("status", "OPEN").execute()
+        return response.data
+    except Exception as e:
+        logger.error(f"Error fetching trades: {e}")
+        return []
+
+@app.post("/api/exit-option-trade")
+async def exit_option_trade_api(data: dict):
+    """Handles manual exit requests from the Portfolio UI."""
+    trade_id = data.get("trade_id")
+    symbol = data.get("symbol")
+    
+    # 1. Remove from in-memory dictionary to stop background monitoring
+    if symbol in ACTIVE_OPTION_TRADES:
+        del ACTIVE_OPTION_TRADES[symbol]
+    
+    # 2. Update status in Supabase to 'CLOSED'
+    try:
+        supabase.table("paper_trades") \
+            .update({"status": "CLOSED"}) \
+            .eq("id", trade_id) \
+            .execute()
+        
+        logger.info(f"🚩 MANUAL EXIT: Trade {trade_id} ({symbol}) closed successfully.")
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"❌ Failed to close trade in DB: {e}")
+        raise HTTPException(status_code=500, detail="Database sync error")
 
 @app.api_route("/start-finding-breakouts", methods=["GET", "POST"])
 async def handle_find_breakouts(background_tasks: BackgroundTasks):
@@ -288,3 +352,14 @@ def build_dashboard_data(date_str: str):
     }
 
     return result
+
+@app.websocket("/ws/options")
+async def websocket_options_endpoint(websocket: WebSocket):
+    """Endpoint for the React frontend to connect and receive live option prices."""
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive, listen for ping/messages from frontend if any
+            data = await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)

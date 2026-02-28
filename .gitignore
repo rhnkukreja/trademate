@@ -33,6 +33,7 @@ tv_state.json
 logistic_breakout_model_2.pkl
 credentials.json
 derivative_perfomance.py
+test_ws_broadcast.py
 
 # Ignore excel files
 *.xlsx
