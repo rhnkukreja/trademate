@@ -15,6 +15,7 @@ from utils.common import kite
 from fastapi import WebSocket, WebSocketDisconnect
 from utils.options_streamer import ws_manager, start_kite_ticker
 from utils.options_streamer import ACTIVE_OPTION_TRADES
+from fastapi.middleware.cors import CORSMiddleware
 
 creds_b64 = os.getenv("GOOGLE_SHEET_CREDS_B64")
 
@@ -32,7 +33,10 @@ app = FastAPI(title="Trademate")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ⚠️ Use only for development!
+    allow_origins=[
+        "http://localhost:8080", 
+        "https://trademate01.netlify.app" # Your actual Netlify URL
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
