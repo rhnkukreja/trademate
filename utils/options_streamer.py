@@ -156,7 +156,7 @@ def on_ticks(ws, ticks):
         threading.Thread(target=run_triple_green_strategy).start()
 
     formatted_ticks = []
-    # 🟢 Add this at the start of your loop to calculate % moves
+
     for tick in ticks:
         token = tick['instrument_token']
         info = token_to_symbol.get(token, {})
@@ -177,10 +177,33 @@ def on_ticks(ws, ticks):
             "type": info.get("type", "UNKNOWN"),
             "ltp": ltp,
             "open": open_price,
-            "change_percent": change_percent, # 🟢 NEW
+            "change_percent": change_percent,
             "volume": tick.get('volume_traded', 0),
             "oi": tick.get('oi', 0)
         })
+
+    for sym, trade_data in list(ACTIVE_OPTION_TRADES.items()):
+        # Find the current LTP for this specific traded symbol
+        tick_info = next((t for t in formatted_ticks if t['symbol'] == sym), None)
+        if not tick_info: continue
+        
+        ltp = tick_info['ltp']
+        side = trade_data['type']
+        sl = trade_data['sl']
+        target = trade_data['target']
+
+        # Check conditions
+        hit_sl = (side == "BUY" and ltp <= sl) or (side == "SELL" and ltp >= sl)
+        hit_target = (side == "BUY" and ltp >= target) or (side == "SELL" and ltp <= target)
+
+        if hit_sl or hit_target:
+            logger.info(f"🚨 AUTO-EXIT: {sym} hit {'SL' if hit_sl else 'Target'} at {ltp}")
+            # This calls the exit function to remove it from memory
+            exit_option_trade(sym, ltp, "AUTO_EXIT_TRIGGERED")
+            
+            # 🔄 Also update Supabase so the UI knows it is closed
+            from utils.common import supabase
+            supabase.table("paper_trades").update({"status": "CLOSED"}).eq("symbol", sym).eq("status", "OPEN").execute()
 
     asyncio.run_coroutine_threadsafe(ws_manager.broadcast({"type": "live_options", "data": formatted_ticks}), fastapi_loop)
 

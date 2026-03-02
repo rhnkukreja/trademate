@@ -16,6 +16,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from utils.options_streamer import ws_manager, start_kite_ticker
 from utils.options_streamer import ACTIVE_OPTION_TRADES
 from fastapi.middleware.cors import CORSMiddleware
+import asyncio
 
 creds_b64 = os.getenv("GOOGLE_SHEET_CREDS_B64")
 
@@ -35,7 +36,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:8080", 
-        "https://trademate01.netlify.app" # Your actual Netlify URL
+        "https://trademate01.netlify.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -45,7 +46,18 @@ app.add_middleware(
 class PayloadRequest(BaseModel):
     token: str
 
-# Inside main.py
+@app.get("/api/get-paper-balance")
+async def get_paper_balance():
+    """Fetches the persistent balance from Supabase."""
+    try:
+        # Assuming you have a table 'user_config' with a 'balance' key
+        res = supabase.table("kite_config").select("value").eq("key_name", "paper_balance").execute()
+        if res.data:
+            return {"balance": float(res.data[0]["value"])}
+        return {"balance": 100000.0} # Default fallback
+    except Exception as e:
+        return {"balance": 100000.0}
+    
 @app.on_event("startup")
 async def startup_event():
     logger.info("🚀 Starting FastAPI Server & Syncing Session...")
@@ -59,7 +71,7 @@ async def startup_event():
     # 2. Start the Options Ticker (The "Ears")
     start_kite_ticker()
 
-    import asyncio
+    
     # This fires and forgets the monitor into the background immediately
     asyncio.create_task(asyncio.to_thread(start_finding_breakouts))
     logger.info("📡 Stock Breakout Monitor started in background.")
@@ -80,6 +92,18 @@ async def place_option_order(data: dict):
     if existing_check.data and len(existing_check.data) > 0:
         logger.warning(f"⚠️ Duplicate Blocked: {symbol} already has an open position.")
         return {"status": "ignored", "message": "Position already open"}
+    
+    # FETCH CURRENT BALANCE
+    balance_res = supabase.table("kite_config").select("value").eq("key_name", "paper_balance").execute()
+    current_balance = float(balance_res.data[0]["value"]) if balance_res.data else 100000.0
+
+    # VERIFY FUNDS
+    qty = data.get("quantity", 50) # Initial fallback or fetch lot size logic
+    margin_required = price * qty
+    
+    if margin_required > current_balance:
+        logger.warning(f"❌ Insufficient Funds: Need {margin_required}, have {current_balance}")
+        return {"status": "error", "message": "Don't have enough funds, please add funds."}
     
     # 🟢 1. FETCH ACTUAL LOT SIZE FROM KITE
     try:
@@ -121,6 +145,12 @@ async def place_option_order(data: dict):
         "created_at": datetime.now().isoformat()
     }
     supabase.table("paper_trades").insert(trade_record).execute()
+
+    margin_required = price * qty
+    supabase.rpc("deduct_balance", {"amount": margin_required}).execute()
+
+    new_balance = current_balance - margin_required
+    supabase.table("kite_config").update({"value": str(new_balance)}).eq("key_name", "paper_balance").execute()
     
     return {"status": "success", "verified_quantity": qty}
 
