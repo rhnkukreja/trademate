@@ -15,8 +15,12 @@ from utils.common import kite
 from fastapi import WebSocket, WebSocketDisconnect
 from utils.options_streamer import ws_manager, start_kite_ticker
 from utils.options_streamer import ACTIVE_OPTION_TRADES
-from fastapi.middleware.cors import CORSMiddleware
 import asyncio
+
+def get_db_balance():
+    """Consolidated helper to fetch paper balance."""
+    res = supabase.table("kite_config").select("value").eq("key_name", "paper_balance").execute()
+    return float(res.data[0]["value"]) if res.data else 100000.0
 
 creds_b64 = os.getenv("GOOGLE_SHEET_CREDS_B64")
 
@@ -48,15 +52,7 @@ class PayloadRequest(BaseModel):
 
 @app.get("/api/get-paper-balance")
 async def get_paper_balance():
-    """Fetches the persistent balance from Supabase."""
-    try:
-        # Assuming you have a table 'user_config' with a 'balance' key
-        res = supabase.table("kite_config").select("value").eq("key_name", "paper_balance").execute()
-        if res.data:
-            return {"balance": float(res.data[0]["value"])}
-        return {"balance": 100000.0} # Default fallback
-    except Exception as e:
-        return {"balance": 100000.0}
+    return {"balance": get_db_balance()}
     
 @app.on_event("startup")
 async def startup_event():
@@ -70,7 +66,6 @@ async def startup_event():
     
     # 2. Start the Options Ticker (The "Ears")
     start_kite_ticker()
-
     
     # This fires and forgets the monitor into the background immediately
     asyncio.create_task(asyncio.to_thread(start_finding_breakouts))
@@ -93,66 +88,46 @@ async def place_option_order(data: dict):
         logger.warning(f"⚠️ Duplicate Blocked: {symbol} already has an open position.")
         return {"status": "ignored", "message": "Position already open"}
     
-    # FETCH CURRENT BALANCE
-    balance_res = supabase.table("kite_config").select("value").eq("key_name", "paper_balance").execute()
-    current_balance = float(balance_res.data[0]["value"]) if balance_res.data else 100000.0
-
-    # VERIFY FUNDS
-    qty = data.get("quantity", 50) # Initial fallback or fetch lot size logic
+    # 🟢 1. FETCH & VERIFY FUNDS (Refactored)
+    current_balance = get_db_balance()
+    qty = data.get("quantity", 50)
     margin_required = price * qty
     
     if margin_required > current_balance:
         logger.warning(f"❌ Insufficient Funds: Need {margin_required}, have {current_balance}")
         return {"status": "error", "message": "Don't have enough funds, please add funds."}
     
-    # 🟢 1. FETCH ACTUAL LOT SIZE FROM KITE
+    # 🟢 1. FETCH ACTUAL LOT SIZE & SYNC CALCULATIONS
     try:
-        # We fetch NFO instruments to find the specific lot size for this CE/PE
         instruments = kite.instruments("NFO")
         instrument_info = next((i for i in instruments if i['tradingsymbol'] == symbol), None)
-        
-        if not instrument_info:
-            logger.error(f"❌ Instrument {symbol} not found in Kite NFO list.")
-            raise HTTPException(status_code=404, detail="Instrument not found")
-        
-        # Use the exchange-defined lot size (e.g., 75 for Nifty, 15 for Bank Nifty)
-        qty = instrument_info['lot_size'] 
-        logger.info(f"✅ Verified Lot Size for {symbol}: {qty}")
-        
+        qty = instrument_info['lot_size'] if instrument_info else data.get("quantity", 50)
     except Exception as e:
         logger.error(f"❌ Kite Instrument Fetch Error: {e}")
-        # Fallback to 50 if Kite lookup fails, but ideally, we want the real data
-        qty = data.get("quantity", 50) 
+        qty = data.get("quantity", 50)
 
-    # 2. Calculate 1:2 Risk-Reward
+    # 🟢 2. UNIFIED RISK-REWARD & MARGIN
     sl = round(price * 0.99, 2) if side == "BUY" else round(price * 1.01, 2)
     target = round(price * 1.02, 2) if side == "BUY" else round(price * 0.98, 2)
+    margin_required = price * qty
 
-    # 3. Update In-Memory Monitor for live auto-exit logic
-    ACTIVE_OPTION_TRADES[symbol] = {
-        "entry": price, "qty": qty, "type": side, "sl": sl, "target": target
-    }
-
-    # 4. Save to Supabase via Python
+    # 🟢 3. ATOMIC EXECUTION (Memory -> DB -> Balance)
+    ACTIVE_OPTION_TRADES[symbol] = {"entry": price, "qty": qty, "type": side, "sl": sl, "target": target}
+    
     trade_record = {
-        "symbol": symbol, 
-        "entry_price": price, 
-        "quantity": qty, # 🟢 Now using official lot size
-        "side": side, 
-        "status": "OPEN", 
-        "sl_price": sl, 
-        "target_price": target,
+        "symbol": symbol, "entry_price": price, "quantity": qty,
+        "side": side, "status": "OPEN", "sl_price": sl, "target_price": target,
         "created_at": datetime.now().isoformat()
     }
+    
+    # Run DB insertions
     supabase.table("paper_trades").insert(trade_record).execute()
-
-    margin_required = price * qty
-    supabase.rpc("deduct_balance", {"amount": margin_required}).execute()
-
+    
+    # Unified Balance Update
     new_balance = current_balance - margin_required
     supabase.table("kite_config").update({"value": str(new_balance)}).eq("key_name", "paper_balance").execute()
     
-    return {"status": "success", "verified_quantity": qty}
+    return {"status": "success", "verified_quantity": qty, "new_balance": new_balance}
 
 @app.get("/api/get-active-trades")
 async def get_active_trades():
@@ -267,26 +242,20 @@ def get_dashboard(date: str):
     except:
         return build_dashboard_data(requested_date)
     
-    
+def get_count(date_str: str, tier=None,):
+        query = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str)
+        if tier: query = query.eq("monitoring_tier", tier)
+        return query.execute().count or 0
+
 def build_dashboard_data(date_str: str):
     """All the existing dashboard logic moved here so we can reuse it."""
     result = {}
-    
-    # 1. Monitor list count
-    try:
-        r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).execute()
-        result["monitor_list_count"] = r.count
-    except:
-        result["monitor_list_count"] = 0
 
-    # 2. Slow tier count
-    try:
-        r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).eq("monitoring_tier", "slow").execute()
-        result["slow_tier_count"] = r.count
-    except:
-        result["slow_tier_count"] = 0
+    result["monitor_list_count"] = get_count()
+    result["slow_tier_count"] = get_count("slow")
+    result["fast_tier_count"] = get_count("fast")
         
-    # 3. Fast tier count + symbols
+    # Fast tier count + symbols
     try:
         r = supabase.table("monitor_list") \
             .select("symbol,has_derivative, max_ma, tick_size", count="exact") \
@@ -445,3 +414,8 @@ async def websocket_options_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+
+@app.get("/api/get-option-chain-snapshot")
+async def get_option_chain_snapshot():
+    res = supabase.table("market_snapshots").select("data").order("created_at", desc=True).limit(1).execute()
+    return res.data[0]["data"] if res.data else []

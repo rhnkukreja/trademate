@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timedelta, date
 from fastapi import WebSocket
 from kiteconnect import KiteTicker
-from utils.common import kite, logger, get_active_token
+from utils.common import kite, logger, get_active_token, supabase
 
 # 1. Single source of truth for trades
 ACTIVE_OPTION_TRADES = {}
@@ -182,28 +182,27 @@ def on_ticks(ws, ticks):
             "oi": tick.get('oi', 0)
         })
 
-    for sym, trade_data in list(ACTIVE_OPTION_TRADES.items()):
-        # Find the current LTP for this specific traded symbol
-        tick_info = next((t for t in formatted_ticks if t['symbol'] == sym), None)
-        if not tick_info: continue
+    # for sym, trade_data in list(ACTIVE_OPTION_TRADES.items()):
+    #     # Find the current LTP for this specific traded symbol
+    #     tick_info = next((t for t in formatted_ticks if t['symbol'] == sym), None)
+    #     if not tick_info: continue
         
-        ltp = tick_info['ltp']
-        side = trade_data['type']
-        sl = trade_data['sl']
-        target = trade_data['target']
+    #     ltp = tick_info['ltp']
+    #     side = trade_data['type']
+    #     sl = trade_data['sl']
+    #     target = trade_data['target']
 
-        # Check conditions
-        hit_sl = (side == "BUY" and ltp <= sl) or (side == "SELL" and ltp >= sl)
-        hit_target = (side == "BUY" and ltp >= target) or (side == "SELL" and ltp <= target)
+    #     # Check conditions
+    #     hit_sl = (side == "BUY" and ltp <= sl) or (side == "SELL" and ltp >= sl)
+    #     hit_target = (side == "BUY" and ltp >= target) or (side == "SELL" and ltp <= target)
 
-        if hit_sl or hit_target:
-            logger.info(f"🚨 AUTO-EXIT: {sym} hit {'SL' if hit_sl else 'Target'} at {ltp}")
-            # This calls the exit function to remove it from memory
-            exit_option_trade(sym, ltp, "AUTO_EXIT_TRIGGERED")
+    #     if hit_sl or hit_target:
+    #         logger.info(f"🚨 AUTO-EXIT: {sym} hit {'SL' if hit_sl else 'Target'} at {ltp}")
+    #         # This calls the exit function to remove it from memory
+    #         exit_option_trade(sym, ltp, "AUTO_EXIT_TRIGGERED")
             
-            # 🔄 Also update Supabase so the UI knows it is closed
-            from utils.common import supabase
-            supabase.table("paper_trades").update({"status": "CLOSED"}).eq("symbol", sym).eq("status", "OPEN").execute()
+    #         # 🔄 Also update Supabase so the UI knows it is closed
+    #         supabase.table("paper_trades").update({"status": "CLOSED"}).eq("symbol", sym).eq("status", "OPEN").execute()
 
     asyncio.run_coroutine_threadsafe(ws_manager.broadcast({"type": "live_options", "data": formatted_ticks}), fastapi_loop)
 
