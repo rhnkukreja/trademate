@@ -45,20 +45,24 @@ app.add_middleware(
 class PayloadRequest(BaseModel):
     token: str
 
+# Inside main.py
 @app.on_event("startup")
 async def startup_event():
     logger.info("🚀 Starting FastAPI Server & Syncing Session...")
     
-    # 🔄 SYNC TOKEN BEFORE STARTING TICKER
+    # 1. Sync Token (from your previous fix)
+    from utils.common import get_active_token, kite
     token = get_active_token()
     if token:
         kite.set_access_token(token)
-        logger.info(f"✅ Kite session synced for startup (Token: {token[:5]}...)")
     
+    # 2. Start the Options Ticker (The "Ears")
     start_kite_ticker()
 
     import asyncio
+    # This fires and forgets the monitor into the background immediately
     asyncio.create_task(asyncio.to_thread(start_finding_breakouts))
+    logger.info("📡 Stock Breakout Monitor started in background.")
 
 @app.post("/api/place-option-order")
 async def place_option_order(data: dict):
