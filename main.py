@@ -57,6 +57,9 @@ async def startup_event():
     
     start_kite_ticker()
 
+    import asyncio
+    asyncio.create_task(asyncio.to_thread(start_finding_breakouts))
+
 @app.post("/api/place-option-order")
 async def place_option_order(data: dict):
     symbol = data.get("symbol")
