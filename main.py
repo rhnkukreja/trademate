@@ -54,27 +54,61 @@ async def startup_event():
 async def place_option_order(data: dict):
     symbol = data.get("symbol")
     price = data.get("price")
-    qty = data.get("quantity", 50)
     side = data.get("side", "BUY")
+
+    # 🟢 DUPLICATE PROTECTION: Check if trade already exists
+    existing_check = supabase.table("paper_trades") \
+        .select("id") \
+        .eq("symbol", symbol) \
+        .eq("status", "OPEN") \
+        .execute()
+
+    if existing_check.data and len(existing_check.data) > 0:
+        logger.warning(f"⚠️ Duplicate Blocked: {symbol} already has an open position.")
+        return {"status": "ignored", "message": "Position already open"}
     
-    # Calculate 1:2 Risk-Reward
+    # 🟢 1. FETCH ACTUAL LOT SIZE FROM KITE
+    try:
+        # We fetch NFO instruments to find the specific lot size for this CE/PE
+        instruments = kite.instruments("NFO")
+        instrument_info = next((i for i in instruments if i['tradingsymbol'] == symbol), None)
+        
+        if not instrument_info:
+            logger.error(f"❌ Instrument {symbol} not found in Kite NFO list.")
+            raise HTTPException(status_code=404, detail="Instrument not found")
+        
+        # Use the exchange-defined lot size (e.g., 75 for Nifty, 15 for Bank Nifty)
+        qty = instrument_info['lot_size'] 
+        logger.info(f"✅ Verified Lot Size for {symbol}: {qty}")
+        
+    except Exception as e:
+        logger.error(f"❌ Kite Instrument Fetch Error: {e}")
+        # Fallback to 50 if Kite lookup fails, but ideally, we want the real data
+        qty = data.get("quantity", 50) 
+
+    # 2. Calculate 1:2 Risk-Reward
     sl = round(price * 0.99, 2) if side == "BUY" else round(price * 1.01, 2)
     target = round(price * 1.02, 2) if side == "BUY" else round(price * 0.98, 2)
 
-    # 1. Update In-Memory Monitor for live auto-exit logic
+    # 3. Update In-Memory Monitor for live auto-exit logic
     ACTIVE_OPTION_TRADES[symbol] = {
         "entry": price, "qty": qty, "type": side, "sl": sl, "target": target
     }
 
-    # 2. Save to Supabase via Python
+    # 4. Save to Supabase via Python
     trade_record = {
-        "symbol": symbol, "entry_price": price, "quantity": qty,
-        "side": side, "status": "OPEN", "sl_price": sl, "target_price": target,
+        "symbol": symbol, 
+        "entry_price": price, 
+        "quantity": qty, # 🟢 Now using official lot size
+        "side": side, 
+        "status": "OPEN", 
+        "sl_price": sl, 
+        "target_price": target,
         "created_at": datetime.now().isoformat()
     }
     supabase.table("paper_trades").insert(trade_record).execute()
     
-    return {"status": "success"}
+    return {"status": "success", "verified_quantity": qty}
 
 @app.get("/api/get-active-trades")
 async def get_active_trades():

@@ -216,7 +216,7 @@ def start_kite_ticker():
     t.daemon = True
     t.start()
 
-    threading.Thread(target=start_internal_ui_test, daemon=True).start()
+    # threading.Thread(target=start_internal_ui_test, daemon=True).start()
 
 # 🧪 TEMPORARY TEST LOOP (Remove after testing)
 def run_ui_test():
