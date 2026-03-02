@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import gspread
 import base64
 import json
-from utils.common import supabase, logger
+from utils.common import supabase, logger, get_active_token, kite
 from datetime import date, datetime
 from utils.common import kite
 from fastapi import WebSocket, WebSocketDisconnect
@@ -47,7 +47,14 @@ class PayloadRequest(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("🚀 Starting FastAPI Server & Initializing KiteTicker...")
+    logger.info("🚀 Starting FastAPI Server & Syncing Session...")
+    
+    # 🔄 SYNC TOKEN BEFORE STARTING TICKER
+    token = get_active_token()
+    if token:
+        kite.set_access_token(token)
+        logger.info(f"✅ Kite session synced for startup (Token: {token[:5]}...)")
+    
     start_kite_ticker()
 
 @app.post("/api/place-option-order")

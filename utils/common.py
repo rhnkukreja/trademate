@@ -30,6 +30,17 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
+# -------------------------- Log Filtering --------------------------
+# This prevents health check logs from cluttering your Render terminal
+class EndpointFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Exclude any log message containing the health endpoint
+        return "/health" not in record.getMessage()
+
+# Apply the filter to the uvicorn access logger
+logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
+
 # Get a logger for this common module
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -117,14 +128,20 @@ try:
 
     # 3️⃣ Initialize Kite Client
     kite = KiteConnect(api_key=KITE_API_KEY)
+    
+    # Force sync from Supabase before the first check
     active_token = get_active_token()
-    kite.set_access_token(active_token)
+    if active_token:
+        kite.set_access_token(active_token)
 
     try:
-        kite.profile()
-        logger.info("Successfully initialized Kite client.")
+        if active_token:
+            kite.profile()
+            logger.info("Successfully initialized Kite client.")
+        else:
+            logger.warning("No active token found in Supabase/Env to initialize Kite.")
     except Exception as e:
-        logger.error(f"Kite session expired or invalid: {e}. Automation script should refresh it.")
+        logger.error(f"Initial Kite session check failed: {e}. Session sync will happen at startup.")
 
 except Exception as e:
     logger.critical(f"Failed to initialize critical clients: {e}")
