@@ -419,3 +419,39 @@ async def websocket_options_endpoint(websocket: WebSocket):
 async def get_option_chain_snapshot():
     res = supabase.table("market_snapshots").select("data").order("created_at", desc=True).limit(1).execute()
     return res.data[0]["data"] if res.data else []
+
+@app.get("/api/get-live-option-chain")
+async def get_live_option_chain():
+    """Fetches real-time LTP from Kite even if the market is closed."""
+    from utils.options_streamer import get_nifty_weekly_options
+    try:
+        # 1. Get the tokens and mapping of what to fetch
+        token_map, _ = get_nifty_weekly_options()
+        
+        # 2. Build the list of Kite symbols (NSE:NIFTY 50 or NFO:SYMBOL)
+        symbols = [f"NFO:{v['symbol']}" if v['type'] != 'SPOT' else "NSE:NIFTY 50" for v in token_map.values()]
+        
+        # 3. Fetch current quotes from Zerodha
+        quotes = kite.quote(symbols)
+        
+        live_data = []
+        for info in token_map.values():
+            q_key = f"NFO:{info['symbol']}" if info['type'] != 'SPOT' else "NSE:NIFTY 50"
+            q = quotes.get(q_key, {})
+            
+            ltp = q.get('last_price', 0)
+            ohlc = q.get('ohlc', {})
+            open_price = ohlc.get('open', ltp)
+            
+            live_data.append({
+                "symbol": info["symbol"],
+                "strike": info["strike"],
+                "type": info["type"],
+                "ltp": ltp,
+                "open": open_price,
+                "change_percent": round(((ltp - open_price) / open_price * 100), 2) if open_price > 0 else 0
+            })
+        return live_data
+    except Exception as e:
+        logger.error(f"❌ Kite Fetch Error: {e}")
+        return []
