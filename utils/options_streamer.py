@@ -53,8 +53,9 @@ def get_nifty_weekly_options():
         atm_strike = round(spot_price / 100) * 100
 
         # Cache instruments if not already done
-        if NFO_INSTRUMENTS_CACHE is None:
+        if NFO_INSTRUMENTS_CACHE is None or date.today() != getattr(NFO_INSTRUMENTS_CACHE, '_cache_date', None):
             NFO_INSTRUMENTS_CACHE = pd.DataFrame(kite.instruments("NFO"))
+            NFO_INSTRUMENTS_CACHE._cache_date = date.today()
         
         df = NFO_INSTRUMENTS_CACHE
         df_nifty = df[(df["name"] == "NIFTY") & (df["segment"] == "NFO-OPT")].copy()
@@ -67,7 +68,8 @@ def get_nifty_weekly_options():
         current_expiry = min(future_expiries)
         df_curr = df_nifty[df_nifty["expiry"] == current_expiry]
 
-        strikes = [atm_strike + (i * 100) for i in range(-20, 21)]
+        atm_strike = round(spot_price / 50) * 50
+        strikes = [atm_strike + (i * 50) for i in range(-20, 21)]
         options_tokens = []
         token_map = {}
         
@@ -113,8 +115,9 @@ def get_5_percent_otm_ce():
         spot_price = nifty_quote["NSE:NIFTY 50"]["last_price"]
         target_strike = round((spot_price * 1.05) / 100) * 100
         
-        if NFO_INSTRUMENTS_CACHE is None:
+        if NFO_INSTRUMENTS_CACHE is None or date.today() != getattr(NFO_INSTRUMENTS_CACHE, '_cache_date', None):
             NFO_INSTRUMENTS_CACHE = pd.DataFrame(kite.instruments("NFO"))
+            NFO_INSTRUMENTS_CACHE._cache_date = date.today()
             
         df = NFO_INSTRUMENTS_CACHE
         df_nifty = df[(df["name"] == "NIFTY") & (df["strike"] == target_strike) & (df["instrument_type"] == "CE")].copy()
