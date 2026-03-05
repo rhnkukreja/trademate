@@ -149,49 +149,6 @@ async def get_active_trades():
         logger.error(f"Error fetching trades: {e}")
         return []
 
-@app.post("/api/exit-option-trade")
-async def exit_option_trade(data: dict):
-    symbol = data.get("symbol")
-    trade_id = data.get("trade_id")
-    
-    if symbol not in ACTIVE_OPTION_TRADES:
-        return {"status": "error", "message": "Trade not found in active memory."}
-
-    # 1. Get current trade details
-    trade = ACTIVE_OPTION_TRADES[symbol]
-    entry_price = trade["entry"]
-    quantity = trade.get("qty", 50)
-    
-    # 2. Get the current Price (Exit Price)
-    # Checks Mock Cache first, then asks Kite for Live price
-    from utils.options_streamer import last_mock_prices
-    exit_price = last_mock_prices.get(symbol)
-    
-    if not exit_price:
-        try:
-            q = kite.quote(f"NFO:{symbol}")
-            exit_price = q.get(f"NFO:{symbol}", {}).get("last_price", entry_price)
-        except:
-            exit_price = entry_price
-
-    # 3. Calculate PnL & Refund
-    pnl = (exit_price - entry_price) * quantity if trade["type"] == "BUY" else (entry_price - exit_price) * quantity
-    refund_amount = (entry_price * quantity) + pnl
-
-    # 4. Update Database
-    try:
-        current_balance = get_db_balance()
-        new_balance = round(current_balance + refund_amount, 2)
-        supabase.table("kite_config").update({"value": str(new_balance)}).eq("key_name", "paper_balance").execute()
-        supabase.table("paper_trades").update({"status": "CLOSED"}).eq("id", trade_id).execute()
-        
-        # 5. Clear Memory
-        del ACTIVE_OPTION_TRADES[symbol]
-        return {"status": "success", "new_balance": new_balance, "pnl": pnl}
-    except Exception as e:
-        logger.error(f"❌ Exit Error: {e}")
-        return {"status": "error", "message": "Database sync failed during exit."}
-
 @app.api_route("/start-finding-breakouts", methods=["GET", "POST"])
 async def handle_find_breakouts(background_tasks: BackgroundTasks):
     """
@@ -499,32 +456,38 @@ async def exit_option_trade(data: dict):
     trade_id = data.get("trade_id")
     
     if symbol not in ACTIVE_OPTION_TRADES:
-        return {"status": "error", "message": "Trade not found"}
+        return {"status": "error", "message": "Trade not found in active memory."}
 
     # 1. Get current trade details
     trade = ACTIVE_OPTION_TRADES[symbol]
     entry_price = trade["entry"]
-    quantity = 50  # Matches our mock default
+    quantity = trade.get("qty", 50)
     
-    # 2. Get the current LTP (Exit Price)
-    # In mock mode, we pull the latest price from our streamer
+    # 2. Get the current Price (Exit Price)
     from utils.options_streamer import last_mock_prices
-    exit_price = last_mock_prices.get(symbol, entry_price)
-
-    # 3. Calculate PnL
-    # If BUY: (Exit - Entry) * Qty | If SELL: (Entry - Exit) * Qty
-    pnl = (exit_price - entry_price) * quantity if trade["side"] == "BUY" else (entry_price - exit_price) * quantity
+    exit_price = last_mock_prices.get(symbol)
     
-    # 4. Calculate Refund (Original Margin + PnL)
-    original_margin = entry_price * quantity
-    refund_amount = original_margin + pnl
+    if not exit_price:
+        try:
+            q = kite.quote(f"NFO:{symbol}")
+            exit_price = q.get(f"NFO:{symbol}", {}).get("last_price", entry_price)
+        except:
+            exit_price = entry_price
 
-    # 5. Update Database
-    current_balance = get_db_balance()
-    new_balance = round(current_balance + refund_amount, 2)
-    supabase.table("kite_config").update({"value": str(new_balance)}).eq("key_name", "paper_balance").execute()
+    # 3. Calculate PnL & Refund
+    pnl = (exit_price - entry_price) * quantity if trade["type"] == "BUY" else (entry_price - exit_price) * quantity
+    refund_amount = (entry_price * quantity) + pnl
 
-    # 6. Remove from active trades
-    del ACTIVE_OPTION_TRADES[symbol]
-    
-    return {"status": "success", "new_balance": new_balance, "pnl": pnl}
+    # 4. Update Database
+    try:
+        current_balance = get_db_balance()
+        new_balance = round(current_balance + refund_amount, 2)
+        supabase.table("kite_config").update({"value": str(new_balance)}).eq("key_name", "paper_balance").execute()
+        supabase.table("paper_trades").update({"status": "CLOSED"}).eq("id", trade_id).execute()
+        
+        # 5. Clear Memory
+        del ACTIVE_OPTION_TRADES[symbol]
+        return {"status": "success", "new_balance": new_balance, "pnl": pnl}
+    except Exception as e:
+        logger.error(f"❌ Exit Error: {e}")
+        return {"status": "error", "message": "Database sync failed."}
