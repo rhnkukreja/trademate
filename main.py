@@ -19,8 +19,14 @@ import asyncio
 
 def get_db_balance():
     """Consolidated helper to fetch paper balance."""
-    res = supabase.table("kite_config").select("value").eq("key_name", "paper_balance").execute()
-    return float(res.data[0]["value"]) if res.data else 100000.0
+    try:
+        res = supabase.table("kite_config").select("value").eq("key_name", "paper_balance").execute()
+        if res.data and len(res.data) > 0:
+            return float(res.data[0]["value"])
+        return 100000.0
+    except Exception as e:
+        logger.error(f"❌ Error reading balance from Supabase: {e}")
+        return 100000.0
 
 creds_b64 = os.getenv("GOOGLE_SHEET_CREDS_B64")
 
@@ -39,8 +45,8 @@ app = FastAPI(title="Trademate")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:8080", 
-        "https://trademate01.netlify.app"
+        "http://localhost:8080",
+        "https://melodious-wisp-e4651e.netlify.app/"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -68,8 +74,8 @@ async def startup_event():
     start_kite_ticker()
     
     # This fires and forgets the monitor into the background immediately
-    asyncio.create_task(asyncio.to_thread(start_finding_breakouts))
-    logger.info("📡 Stock Breakout Monitor started in background.")
+    # asyncio.create_task(asyncio.to_thread(start_finding_breakouts))
+    # logger.info("📡 Stock Breakout Monitor started in background.")
 
 @app.post("/api/place-option-order")
 async def place_option_order(data: dict):
@@ -97,14 +103,15 @@ async def place_option_order(data: dict):
         logger.warning(f"❌ Insufficient Funds: Need {margin_required}, have {current_balance}")
         return {"status": "error", "message": "Don't have enough funds, please add funds."}
     
-    # 🟢 1. FETCH ACTUAL LOT SIZE & SYNC CALCULATIONS
+    # 🟢 FIXED: Default to 50 if Kite fails so balance still updates
+    qty = 50
     try:
         instruments = kite.instruments("NFO")
         instrument_info = next((i for i in instruments if i['tradingsymbol'] == symbol), None)
-        qty = instrument_info['lot_size'] if instrument_info else data.get("quantity", 50)
+        if instrument_info:
+            qty = instrument_info['lot_size']
     except Exception as e:
-        logger.error(f"❌ Kite Instrument Fetch Error: {e}")
-        qty = data.get("quantity", 50)
+        logger.warning(f"⚠️ Using default lot size 50: {e}")
 
     # 🟢 2. UNIFIED RISK-REWARD & MARGIN
     sl = round(price * 0.99, 2) if side == "BUY" else round(price * 1.01, 2)
@@ -124,8 +131,11 @@ async def place_option_order(data: dict):
     supabase.table("paper_trades").insert(trade_record).execute()
     
     # Unified Balance Update
-    new_balance = current_balance - margin_required
-    supabase.table("kite_config").update({"value": str(new_balance)}).eq("key_name", "paper_balance").execute()
+    new_balance = round(current_balance - margin_required, 2)
+    update_res = supabase.table("kite_config").update({"value": str(new_balance)}).eq("key_name", "paper_balance").execute()
+    
+    if not update_res.data:
+        logger.error("❌ Failed to update balance in Supabase. Ensure row 'paper_balance' exists.")
     
     return {"status": "success", "verified_quantity": qty, "new_balance": new_balance}
 
@@ -251,9 +261,14 @@ def build_dashboard_data(date_str: str):
     """All the existing dashboard logic moved here so we can reuse it."""
     result = {}
 
-    result["monitor_list_count"] = get_count()
-    result["slow_tier_count"] = get_count("slow")
-    result["fast_tier_count"] = get_count("fast")
+    # result["monitor_list_count"] = get_count()
+    # result["slow_tier_count"] = get_count("slow")
+    # result["fast_tier_count"] = get_count("fast")
+
+    # FOR MOCK DATA TESTING
+    result["monitor_list_count"] = get_count(date_str)
+    result["slow_tier_count"] = get_count(date_str, "slow")
+    result["fast_tier_count"] = get_count(date_str, "fast")
         
     # Fast tier count + symbols
     try:
@@ -455,3 +470,39 @@ async def get_live_option_chain():
     except Exception as e:
         logger.error(f"❌ Kite Fetch Error: {e}")
         return []
+
+@app.post("/api/exit-option-trade")
+async def exit_option_trade(data: dict):
+    symbol = data.get("symbol")
+    trade_id = data.get("trade_id")
+    
+    if symbol not in ACTIVE_OPTION_TRADES:
+        return {"status": "error", "message": "Trade not found"}
+
+    # 1. Get current trade details
+    trade = ACTIVE_OPTION_TRADES[symbol]
+    entry_price = trade["entry"]
+    quantity = 50  # Matches our mock default
+    
+    # 2. Get the current LTP (Exit Price)
+    # In mock mode, we pull the latest price from our streamer
+    from utils.options_streamer import last_mock_prices
+    exit_price = last_mock_prices.get(symbol, entry_price)
+
+    # 3. Calculate PnL
+    # If BUY: (Exit - Entry) * Qty | If SELL: (Entry - Exit) * Qty
+    pnl = (exit_price - entry_price) * quantity if trade["side"] == "BUY" else (entry_price - exit_price) * quantity
+    
+    # 4. Calculate Refund (Original Margin + PnL)
+    original_margin = entry_price * quantity
+    refund_amount = original_margin + pnl
+
+    # 5. Update Database
+    current_balance = get_db_balance()
+    new_balance = round(current_balance + refund_amount, 2)
+    supabase.table("kite_config").update({"value": str(new_balance)}).eq("key_name", "paper_balance").execute()
+
+    # 6. Remove from active trades
+    del ACTIVE_OPTION_TRADES[symbol]
+    
+    return {"status": "success", "new_balance": new_balance, "pnl": pnl}

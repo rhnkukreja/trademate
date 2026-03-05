@@ -7,9 +7,12 @@ from datetime import datetime, timedelta, date
 from fastapi import WebSocket
 from kiteconnect import KiteTicker
 from utils.common import kite, logger, get_active_token, supabase
+import math
+import random
 
-# 1. Single source of truth for trades
+
 ACTIVE_OPTION_TRADES = {}
+last_mock_prices = {}
 # Global cache for NFO instruments to avoid heavy API calls
 NFO_INSTRUMENTS_CACHE = None
 
@@ -166,10 +169,20 @@ def on_ticks(ws, ticks):
         ohlc = tick.get('ohlc', {})
         open_price = ohlc.get('open', ltp) # Fallback to LTP if market just opened
         
-        # Calculate % Move
+        # 🟢 NEW: PnL % calculation based on Trade Entry Price
+        symbol = info.get("symbol")
         change_percent = 0
-        if open_price > 0:
-            change_percent = round(((ltp - open_price) / open_price) * 100, 2)
+        
+        # Check if we have an active trade for this symbol
+        if symbol in ACTIVE_OPTION_TRADES:
+            entry_price = ACTIVE_OPTION_TRADES[symbol].get("entry", 0)
+            if entry_price > 0:
+                # Calculate PnL % relative to your Buy Price
+                change_percent = round(((ltp - entry_price) / entry_price) * 100, 2)
+        else:
+            # Fallback to standard Day Change % if no trade is active
+            if open_price > 0:
+                change_percent = round(((ltp - open_price) / open_price) * 100, 2)
 
         formatted_ticks.append({
             "symbol": info.get("symbol"),
@@ -223,6 +236,9 @@ def on_close(ws, code, reason):
 def start_kite_ticker():
     global ticker, token_to_symbol, fastapi_loop
     fastapi_loop = asyncio.get_event_loop()
+
+    # 🟢 FORCE MOCK TO START REGARDLESS OF KITE AUTH
+    # threading.Thread(target=start_internal_ui_test, daemon=True).start()            # FOR MOCK DATA TESTING
     auth_token = get_active_token()
     if not auth_token: return
 
@@ -256,46 +272,78 @@ def run_ui_test():
 
 def start_internal_ui_test():
     global token_to_symbol
-    logger.info("🧪 Internal Mock Test Starting...")
+    logger.info("🧪 Internal Mock Test Starting (Spot +/- 500 Fluctuations)...")
     
-    # Static 'Open' prices to keep % calculations consistent
     mock_opens = {}
-    base_nifty = 25200.0
+    base_nifty = 25000.0
+    current_spot = base_nifty
 
     while True:
         if not token_to_symbol:
-            time.sleep(1)
-            continue
-            
+            token_to_symbol = {256265: {"symbol": "NIFTY 50", "strike": "SPOT", "type": "SPOT"}}
+            for i in range(-15, 16):
+                strike = int(base_nifty + (i * 100))
+                token_to_symbol[100000 + strike] = {"symbol": f"NIFTY_MOCK_{strike}_CE", "strike": strike, "type": "CE"}
+                token_to_symbol[200000 + strike] = {"symbol": f"NIFTY_MOCK_{strike}_PE", "strike": strike, "type": "PE"}
+
         fake_tick_packet = []
+        
+        # 🟢 RANDOM WALK: Replaces the wave with realistic wandering
+        # It has a slight pull back to base_nifty to keep it within a testable range
+        pull_factor = (base_nifty - current_spot) * 0.01 
+        drift = random.uniform(-2.5, 2.5) + pull_factor
+        current_spot = round(current_spot + drift, 2)
+        
         for token, info in token_to_symbol.items():
             # 1. Handle Spot Index
             if info["type"] == "SPOT":
-                price = round(base_nifty + (datetime.now().second % 15), 2)
-                open_price = 25178.65 # Matching your Zerodha screenshot
+                price = current_spot
+                open_price = 25000.0
             
-            # 2. Handle Options
+            # 2. Handle Options (Correlated with changing spot price)
             else:
-                strike_diff = abs(25200 - info["strike"]) if isinstance(info["strike"], int) else 500
-                # Realistic option pricing logic
-                price = round(max(5, 10 + (datetime.now().second % 20)), 2)
+                strike = info["strike"]
+                # 🟢 GREEK ENGINE: Delta + Theta + Vega
+                intrinsic = max(0, current_spot - strike) if info["type"] == "CE" else max(0, strike - current_spot)
                 
-                # Store a persistent 'Open' price for this session
+                # Simulate Time Decay (Theta) over a 5-minute session
+                session_elapsed = (time.time() % 300) / 300 
+                time_decay = 40 * (1 - session_elapsed) 
+                
+                # Add Volatility (Vega)
+                volatility_premium = 20 + random.uniform(-1, 1)
+                theoretical_price = round(intrinsic + time_decay + volatility_premium, 2)
+                
+                # 🟢 BID-ASK SPREAD: Simulates 0.10 to 0.40 flickering
+                spread = random.uniform(0.10, 0.40)
+                price = round(random.choice([theoretical_price - (spread/2), theoretical_price + (spread/2)]), 2)
+                
+                # Store a persistent 'Open' price for this session to get proper % PnL
                 if token not in mock_opens:
-                    mock_opens[token] = price + 5.5 # Simulate a gap-down start
+                    mock_opens[token] = price + 5.5
                 open_price = mock_opens[token]
 
-            # 3. Calculate % Change
-            change_percent = round(((price - open_price) / open_price) * 100, 2)
+                last_mock_prices[info["symbol"]] = price
+
+            # 🟢 PnL %: Strictly calculates based on Trade Entry Price if active
+            symbol = info["symbol"]
+            if symbol in ACTIVE_OPTION_TRADES:
+                entry_price = ACTIVE_OPTION_TRADES[symbol].get("entry", price)
+                # Formula: ((Current - Entry) / Entry) * 100
+                change_percent = round(((price - entry_price) / entry_price) * 100, 2)
+            else:
+                # Fallback to Day Change % using session open_price
+                change_percent = round(((price - open_price) / open_price) * 100, 2) if open_price > 0 else 0
 
             fake_tick_packet.append({
                 'instrument_token': token,
                 'last_price': price,
                 'volume_traded': 1500 + (token % 500),
                 'oi': 10000 + (token % 1000),
-                'ohlc': {'open': open_price}, # 🟢 Production field
-                'change_percent': change_percent # 🟢 Production field
+                'ohlc': {'open': open_price}, 
+                'change_percent': change_percent 
             })
         
+        # Fire mock data into the real WebSocket broadcaster
         on_ticks(None, fake_tick_packet)
-        time.sleep(1)
+        time.sleep(2)
