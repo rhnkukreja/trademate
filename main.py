@@ -261,14 +261,14 @@ def build_dashboard_data(date_str: str):
     """All the existing dashboard logic moved here so we can reuse it."""
     result = {}
 
-    # result["monitor_list_count"] = get_count()
-    # result["slow_tier_count"] = get_count("slow")
-    # result["fast_tier_count"] = get_count("fast")
+    result["monitor_list_count"] = get_count()
+    result["slow_tier_count"] = get_count("slow")
+    result["fast_tier_count"] = get_count("fast")
 
     # FOR MOCK DATA TESTING
-    result["monitor_list_count"] = get_count(date_str)
-    result["slow_tier_count"] = get_count(date_str, "slow")
-    result["fast_tier_count"] = get_count(date_str, "fast")
+    # result["monitor_list_count"] = get_count(date_str)
+    # result["slow_tier_count"] = get_count(date_str, "slow")
+    # result["fast_tier_count"] = get_count(date_str, "fast")
         
     # Fast tier count + symbols
     try:
