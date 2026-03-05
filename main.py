@@ -150,27 +150,47 @@ async def get_active_trades():
         return []
 
 @app.post("/api/exit-option-trade")
-async def exit_option_trade_api(data: dict):
-    """Handles manual exit requests from the Portfolio UI."""
-    trade_id = data.get("trade_id")
+async def exit_option_trade(data: dict):
     symbol = data.get("symbol")
+    trade_id = data.get("trade_id")
     
-    # 1. Remove from in-memory dictionary to stop background monitoring
-    if symbol in ACTIVE_OPTION_TRADES:
-        del ACTIVE_OPTION_TRADES[symbol]
+    if symbol not in ACTIVE_OPTION_TRADES:
+        return {"status": "error", "message": "Trade not found in active memory."}
+
+    # 1. Get current trade details
+    trade = ACTIVE_OPTION_TRADES[symbol]
+    entry_price = trade["entry"]
+    quantity = trade.get("qty", 50)
     
-    # 2. Update status in Supabase to 'CLOSED'
+    # 2. Get the current Price (Exit Price)
+    # Checks Mock Cache first, then asks Kite for Live price
+    from utils.options_streamer import last_mock_prices
+    exit_price = last_mock_prices.get(symbol)
+    
+    if not exit_price:
+        try:
+            q = kite.quote(f"NFO:{symbol}")
+            exit_price = q.get(f"NFO:{symbol}", {}).get("last_price", entry_price)
+        except:
+            exit_price = entry_price
+
+    # 3. Calculate PnL & Refund
+    pnl = (exit_price - entry_price) * quantity if trade["type"] == "BUY" else (entry_price - exit_price) * quantity
+    refund_amount = (entry_price * quantity) + pnl
+
+    # 4. Update Database
     try:
-        supabase.table("paper_trades") \
-            .update({"status": "CLOSED"}) \
-            .eq("id", trade_id) \
-            .execute()
+        current_balance = get_db_balance()
+        new_balance = round(current_balance + refund_amount, 2)
+        supabase.table("kite_config").update({"value": str(new_balance)}).eq("key_name", "paper_balance").execute()
+        supabase.table("paper_trades").update({"status": "CLOSED"}).eq("id", trade_id).execute()
         
-        logger.info(f"🚩 MANUAL EXIT: Trade {trade_id} ({symbol}) closed successfully.")
-        return {"status": "success"}
+        # 5. Clear Memory
+        del ACTIVE_OPTION_TRADES[symbol]
+        return {"status": "success", "new_balance": new_balance, "pnl": pnl}
     except Exception as e:
-        logger.error(f"❌ Failed to close trade in DB: {e}")
-        raise HTTPException(status_code=500, detail="Database sync error")
+        logger.error(f"❌ Exit Error: {e}")
+        return {"status": "error", "message": "Database sync failed during exit."}
 
 @app.api_route("/start-finding-breakouts", methods=["GET", "POST"])
 async def handle_find_breakouts(background_tasks: BackgroundTasks):
@@ -252,15 +272,17 @@ def get_dashboard(date: str):
     except:
         return build_dashboard_data(requested_date)
     
-def get_count(date_str: str, tier=None,):
-        query = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str)
-        if tier: query = query.eq("monitoring_tier", tier)
-        return query.execute().count or 0
+def get_count(date_str: str, tier=None):
+    query = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str)
+    if tier: 
+        query = query.eq("monitoring_tier", tier)
+    return query.execute().count or 0
 
 def build_dashboard_data(date_str: str):
     """All the existing dashboard logic moved here so we can reuse it."""
     result = {}
 
+    # 🟢 FIXED: Correctly forwarding date_str to every count request
     result["monitor_list_count"] = get_count(date_str)
     result["slow_tier_count"] = get_count(date_str, "slow")
     result["fast_tier_count"] = get_count(date_str, "fast")
