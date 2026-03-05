@@ -9,9 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import gspread
 import base64
 import json
-from utils.common import supabase, logger, get_active_token, kite
+from utils.common import supabase, logger, get_active_token, kite, get_ist_time
 from datetime import date, datetime
-from utils.common import kite
 from fastapi import WebSocket, WebSocketDisconnect
 from utils.options_streamer import ws_manager, start_kite_ticker
 from utils.options_streamer import ACTIVE_OPTION_TRADES
@@ -44,10 +43,7 @@ app = FastAPI(title="Trademate")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8080",
-        "https://melodious-wisp-e4651e.netlify.app/"
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -209,7 +205,8 @@ def get_dashboard(date: str):
     requested_date = date  # e.g. "2026-02-23"
 
     # === 1. If today → always return LIVE data ===
-    today_str = datetime.today().strftime("%Y-%m-%d")
+    # Use IST time to match the monitor list date format
+    today_str = get_ist_time().strftime("%Y-%m-%d")
     if requested_date == today_str:
         return build_dashboard_data(requested_date)   # ← we'll create this helper below
 
@@ -232,8 +229,16 @@ def get_dashboard(date: str):
 def get_count(date_str: str, tier=None):
     query = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str)
     if tier: 
-        query = query.eq("monitoring_tier", tier)
-    return query.execute().count or 0
+        # Primary query (exact match)
+        count = query.eq("monitoring_tier", tier).execute().count or 0
+        # Fallback: case-insensitive if primary returns 0
+        if count == 0:
+            fallback = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).ilike("monitoring_tier", f"%{tier}%").execute()
+            count = fallback.count or 0
+            logger.warning(f"[get_count] Used fallback ilike for tier '{tier}': {count}")
+        return count
+    else:
+        return query.execute().count or 0
 
 def build_dashboard_data(date_str: str):
     """All the existing dashboard logic moved here so we can reuse it."""
@@ -258,6 +263,7 @@ def build_dashboard_data(date_str: str):
             .execute()
 
         result["fast_tier_count"] = r.count
+        logger.info(f"[Dashboard] Fast tier query for {date_str}: count={r.count}, data_len={len(r.data or [])}")  # Debug log
 
         fast_symbols_enriched = []
         for row in (r.data or []):
@@ -300,9 +306,11 @@ def build_dashboard_data(date_str: str):
                         item["current_price"] = q.get("last_price")
             except Exception as e:
                 pass
-    except:
-        result["fast_tier_count"] = 0
-        result["fast_tier_symbols"] = []
+    except Exception as e:
+        logger.error(f"⚠️ Dashboard enrichment error: {e}")
+        # Preserve the counts even if live price enrichment fails
+        if "fast_tier_symbols" not in result:
+            result["fast_tier_symbols"] = []
 
     # 4. Breakout details with Live Price fetching
     try:
