@@ -162,13 +162,23 @@ def build_dashboard_data(requested_date: str):
     logger.info(f"[Dashboard] COMPLETE: fast={result['fast_tier_count']}, monitor={result['monitor_count']}, breakouts={len(result['breakouts'])}")
     return result
 
-@app.get("/api/dashboard")
+_dashboard_cache = {"data": None, "date": None, "ts": 0}
 async def dashboard_endpoint(date: str = None):
     """Dashboard endpoint for breakout page (defaults to today)."""
+    import time
     if not date:
         date = get_ist_time().strftime("%Y-%m-%d")
     try:
+        # Serve from cache if same date and less than 30 seconds old
+        if (_dashboard_cache["date"] == date and
+                _dashboard_cache["data"] is not None and
+                time.time() - _dashboard_cache["ts"] < 30):
+            return _dashboard_cache["data"]
+
         data = build_dashboard_data(date)
+        _dashboard_cache["data"] = data
+        _dashboard_cache["date"] = date
+        _dashboard_cache["ts"] = time.time()
         logger.info(f"[API/Dashboard] Served for {date}: {data['fast_tier_count']} fast, {data['monitor_count']} monitor")
         return data
     except Exception as e:
