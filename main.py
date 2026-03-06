@@ -127,10 +127,29 @@ def build_dashboard_data(requested_date: str):
     except Exception as e:
         logger.error(f"[Dashboard] Live prices failed: {e}")
     
-    # 4. BREAKOUTS: From live_breakouts table (empty per logs, but ready)
+    # 4. BREAKOUTS: From live_breakouts table
     try:
         breakouts_r = supabase.table("live_breakouts").select("*").eq("breakout_date", date_str).order("breakout_time").execute()
-        result["breakouts"] = breakouts_r.data or []
+        breakouts_data = breakouts_r.data or []
+        
+        # 🟢 FETCH LIVE PRICES FOR BREAKOUTS
+        if breakouts_data:
+            breakout_symbols = [f"NSE:{b['symbol']}" for b in breakouts_data]
+            live_quotes = kite.quote(breakout_symbols[:50]) # Batch limit
+            
+            for b in breakouts_data:
+                sym_key = f"NSE:{b['symbol']}"
+                if sym_key in live_quotes:
+                    live_ltp = live_quotes[sym_key].get("last_price")
+                    b["current_price"] = live_ltp
+                    
+                    # 🟢 LIVE RECALCULATION: Override DB % move
+                    if b.get("breakout_price") and float(b["breakout_price"]) > 0:
+                        b["percent_move"] = round(((live_ltp - float(b["breakout_price"])) / float(b["breakout_price"])) * 100, 2)
+                else:
+                    b["current_price"] = b.get("breakout_price")
+                    
+        result["breakouts"] = breakouts_data
        
     except Exception as e:
         logger.error(f"[Dashboard] Breakouts failed: {e}")
@@ -150,6 +169,7 @@ def build_dashboard_data(requested_date: str):
                 elif "Target" in exit_reason: target_hit += 1
                 elif "EOD" in exit_reason: eod_exit += 1
                 pnl_str = (row[13].replace("%", "").strip() if len(row) > 13 else "0")
+                if not pnl_str: pnl_str = "0"  # 🟢 FIX: Prevent empty string crash
                 pnl_list.append({"symbol": row[1], "pnl": float(pnl_str), "percent_move": float(pnl_str)})
     except Exception as e:
         logger.error(f"[Dashboard] Sheet P&L failed: {e}")
@@ -459,17 +479,15 @@ async def exit_option_trade(data: dict):
     symbol = data.get("symbol")
     trade_id = data.get("trade_id")
     
-    if symbol not in ACTIVE_OPTION_TRADES:
-        return {"status": "error", "message": "Trade not found in active memory."}
-
-    # 1. Get current trade details
-    trade = ACTIVE_OPTION_TRADES[symbol]
-    entry_price = trade["entry"]
-    quantity = trade.get("qty", 50)
-    if quantity == 50:
-        db_trade = supabase.table("paper_trades").select("quantity").eq("id", trade_id).execute()
-        if db_trade.data:
-            quantity = db_trade.data[0]["quantity"]
+    # 1. Fetch trade directly from DB (Immune to server restarts)
+    db_trade = supabase.table("paper_trades").select("*").eq("id", trade_id).execute()
+    if not db_trade.data:
+        return {"status": "error", "message": "Trade not found in database."}
+        
+    trade_data = db_trade.data[0]
+    entry_price = trade_data["entry_price"]
+    quantity = trade_data["quantity"]
+    side = trade_data["side"]
     
     # 2. Get the current Price (Exit Price)
     from utils.options_streamer import last_mock_prices
@@ -483,7 +501,7 @@ async def exit_option_trade(data: dict):
             exit_price = entry_price
 
     # 3. Calculate PnL & Refund
-    pnl = (exit_price - entry_price) * quantity if trade["type"] == "BUY" else (entry_price - exit_price) * quantity
+    pnl = (exit_price - entry_price) * quantity if side == "BUY" else (entry_price - exit_price) * quantity
     refund_amount = (entry_price * quantity) + pnl
 
     # 4. Update Database
@@ -493,8 +511,10 @@ async def exit_option_trade(data: dict):
         supabase.table("kite_config").update({"value": str(new_balance)}).eq("key_name", "paper_balance").execute()
         supabase.table("paper_trades").update({"status": "CLOSED"}).eq("id", trade_id).execute()
         
-        # 5. Clear Memory
-        del ACTIVE_OPTION_TRADES[symbol]
+        # 5. Clear Memory if it exists
+        if symbol in ACTIVE_OPTION_TRADES:
+            del ACTIVE_OPTION_TRADES[symbol]
+            
         return {"status": "success", "new_balance": new_balance, "pnl": pnl}
     except Exception as e:
         logger.error(f"❌ Exit Error: {e}")
