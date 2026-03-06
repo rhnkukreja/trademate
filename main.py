@@ -376,6 +376,7 @@ def build_dashboard_data(date_str: str):
 
     # 🟢 FIXED: Correctly forwarding date_str to every count request
     result["monitor_list_count"] = get_count(date_str)
+    result["monitor_count"] = result["monitor_list_count"]
     logger.info(f"[Dashboard] Final monitor_count set to: {result['monitor_count']}")
     result["slow_tier_count"] = get_count(date_str, "slow")
     result["fast_tier_count"] = get_count(date_str, "fast")
