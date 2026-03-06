@@ -87,9 +87,9 @@ def build_dashboard_data(requested_date: str):
     
     # 1. FAST TIER: Query, Enrich, Log (matches your logs: 8 stocks)
     try:
-        tier_query = supabase.table("monitor_list").select("*").eq("date", date_str).eq("monitoring_tier", "fast")
+        tier_query = supabase.table("monitor_list").select("*", count="exact").eq("date", date_str).eq("monitoring_tier", "fast")
         r = tier_query.execute()
-        result["fast_tier_count"] = r.count
+        result["fast_tier_count"] = r.count or len(r.data or [])
         logger.info(f"[Dashboard] Fast tier raw: count={r.count}, data_len={len(r.data or [])}")
         
         fast_symbols_enriched = []
@@ -128,7 +128,7 @@ def build_dashboard_data(requested_date: str):
     
     # 4. BREAKOUTS: From live_breakouts table (empty per logs, but ready)
     try:
-        breakouts_r = supabase.table("live_breakouts").select("*").eq("date", date_str).order("breakout_time").execute()
+        breakouts_r = supabase.table("live_breakouts").select("*").eq("breakout_date", date_str).order("breakout_time").execute()
         result["breakouts"] = breakouts_r.data or []
         logger.info(f"[Dashboard] Breakouts: {len(result['breakouts'])}")
     except Exception as e:
