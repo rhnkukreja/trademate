@@ -260,7 +260,7 @@ async def place_option_order(data: dict):
     symbol = data.get("symbol")
     price = data.get("price")
     side = data.get("side", "BUY")
-    user_qty = data.get("quantity")  # 🟢 Capture what the user actually typed in the UI
+    user_qty = data.get("QTY") or data.get("qty") or data.get("quantity")
 
     # 🟢 DUPLICATE PROTECTION
     existing_check = supabase.table("paper_trades").select("id").eq("symbol", symbol).eq("status", "OPEN").execute()
