@@ -240,20 +240,21 @@ def preload_nfo_data():
 async def startup_event():
     logger.info("🚀 Starting FastAPI Server & Syncing Session...")
     
-    # 1. Sync Token
+    # 1. Sync Token from Supabase
     token = get_active_token()
     if token:
         kite.set_access_token(token)
     
-    # 🟢 NEW: Preload the massive NFO instrument list in the background
+    # 2. Preload NFO instruments in a background thread (Instantly frees up the main thread)
     threading.Thread(target=preload_nfo_data, daemon=True).start()
     
-    # 2. Start the Options Ticker (The "Ears")
+    # 3. Start the Options WebSocket "Ears"
     start_kite_ticker()
     
-    # 3. Fire and forget the full algo flow without nested functions
-    await asyncio.to_thread(run_startup_algo_flow)
-    logger.info("📡 Stock Breakout Monitor + Monitor List build started in background.")
+    # 🟢 THE CRITICAL FIX: Run the heavy algo logic in a separate background thread.
+    threading.Thread(target=run_startup_algo_flow, daemon=True).start()
+    
+    logger.info("📡 Background tasks moved to separate threads. Web server is now binding to port 10000.")
 
 @app.post("/api/place-option-order")
 async def place_option_order(data: dict):
