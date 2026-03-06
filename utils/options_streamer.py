@@ -32,11 +32,16 @@ class ConnectionManager:
             logger.info("🔴 React UI Disconnected.")
 
     async def broadcast(self, message: dict):
+        dead = []
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
             except Exception:
-                pass
+                dead.append(connection)
+        for connection in dead:
+            if connection in self.active_connections:
+                self.active_connections.remove(connection)
+                logger.info("🧹 Removed stale WebSocket connection during broadcast.")
 
 ws_manager = ConnectionManager()
 

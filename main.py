@@ -66,25 +66,24 @@ def build_dashboard_data(requested_date: str):
         "monitor_count": 0  # Key for "Monitor List" UI
     }
     
-    # Robust count helper (with logging/fallback for tier mismatches)
     def get_count(date_str: str, tier=None):
-        base_query = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str)
-        if tier:
-            # Exact match
-            exact_r = base_query.clone().eq("monitoring_tier", tier).execute()
-            count = exact_r.count or 0
-            logger.info(f"[get_count] Exact '{tier}' on {date_str}: {count} (data_len: {len(exact_r.data or [])})")
-            
-            # Fallback: partial match (catches "Fast", "fast", "FAST")
-            if count == 0:
-                fallback_r = base_query.clone().ilike("monitoring_tier", f"%{tier}%").execute()
-                count = fallback_r.count or 0
-                logger.info(f"[get_count] Fallback '%{tier}%' on {date_str}: {count}")
-        else:
-            r = base_query.execute()
-            count = r.count or 0
-            logger.info(f"[get_count] Total on {date_str}: {count} (data_len: {len(r.data or [])})")
-        return count
+        try:
+            if tier:
+                exact_r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).eq("monitoring_tier", tier).execute()
+                count = exact_r.count or 0
+                logger.info(f"[get_count] Exact '{tier}' on {date_str}: {count}")
+                if count == 0:
+                    fallback_r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).ilike("monitoring_tier", f"%{tier}%").execute()
+                    count = fallback_r.count or 0
+                    logger.info(f"[get_count] Fallback '%{tier}%' on {date_str}: {count}")
+            else:
+                r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).execute()
+                count = r.count or 0
+                logger.info(f"[get_count] Total on {date_str}: {count} (data_len: {len(r.data or [])})")
+            return count
+        except Exception as e:
+            logger.error(f"[get_count] Error: {e}")
+            return 0
     
     # 1. FAST TIER: Query, Enrich, Log (matches your logs: 8 stocks)
     try:
@@ -350,184 +349,6 @@ def get_dashboard(date: str):
     except:
         return build_dashboard_data(requested_date)
     
-def get_count(date_str: str, tier=None):
-    query = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str)
-    if tier:
-        # Exact match first
-        exact_r = query.clone().eq("monitoring_tier", tier).execute()
-        count = exact_r.count or 0
-        logger.info(f"[get_count] Exact match for tier '{tier}' on {date_str}: {count}")
-        
-        # Fallback: case-insensitive if 0
-        if count == 0:
-            fallback_r = query.clone().ilike("monitoring_tier", f"%{tier}%").execute()
-            count = fallback_r.count or 0
-            logger.info(f"[get_count] Fallback ilike for tier '{tier}' on {date_str}: {count}")
-    else:
-        r = query.execute()
-        count = r.count or 0
-        logger.info(f"[get_count] Total count for {date_str}: {count} (data_len: {len(r.data or [])})")
-    
-    return count
-
-def build_dashboard_data(date_str: str):
-    """All the existing dashboard logic moved here so we can reuse it."""
-    result = {}
-
-    # 🟢 FIXED: Correctly forwarding date_str to every count request
-    result["monitor_list_count"] = get_count(date_str)
-    result["monitor_count"] = result["monitor_list_count"]
-    logger.info(f"[Dashboard] Final monitor_count set to: {result['monitor_count']}")
-    result["slow_tier_count"] = get_count(date_str, "slow")
-    result["fast_tier_count"] = get_count(date_str, "fast")
-
-    # FOR MOCK DATA TESTING
-    # result["monitor_list_count"] = get_count(date_str)
-    # result["slow_tier_count"] = get_count(date_str, "slow")
-    # result["fast_tier_count"] = get_count(date_str, "fast")
-        
-    # Fast tier count + symbols
-    try:
-        r = supabase.table("monitor_list") \
-            .select("symbol,has_derivative, max_ma, tick_size", count="exact") \
-            .eq("date", date_str) \
-            .eq("monitoring_tier", "fast") \
-            .execute()
-
-        result["fast_tier_count"] = r.count
-        logger.info(f"[Dashboard] Raw fast tier query for {date_str}: count={r.count}, data_len={len(r.data or [])}")
-
-        fast_symbols_enriched = []
-        for row in (r.data or []):
-            candidate = row.get("breakout_price_candidate") or row.get("breakout_price")
-            breakout_price = float(candidate) if candidate else None
-            fast_symbols_enriched.append({
-                "symbol": row["symbol"],
-                "breakout_price": round(breakout_price, 2) if breakout_price else None,
-                "current_price": None,
-                "has_derivative": bool(row.get("has_derivative", False))
-            })
-
-        # Ensure symbols array is set even if empty
-        result["fast_tier_symbols"] = fast_symbols_enriched
-        logger.info(f"[Dashboard] Enriched fast tier symbols: {len(fast_symbols_enriched)} items")
-
-        if fast_symbols_enriched:
-            try:
-                symbols_list = [s["symbol"] for s in fast_symbols_enriched]
-                from utils.common import kite
-                all_quotes = {}
-                for i in range(0, len(symbols_list), 50):
-                    batch = [f"NSE:{s}" for s in symbols_list[i:i+50]]
-                    quotes = kite.quote(batch)
-                    all_quotes.update(quotes)
-                
-                for item in result["fast_tier_symbols"]:
-                    sym = item["symbol"]
-                    q = all_quotes.get(f"NSE:{sym}")
-                    if q:
-                        item["current_price"] = q.get("last_price")
-            except Exception as e:
-                pass
-    except Exception as e:
-        logger.error(f"⚠️ Dashboard enrichment error: {e}")
-        # Preserve the counts even if live price enrichment fails
-        if "fast_tier_symbols" not in result:
-            result["fast_tier_symbols"] = []
-
-    # 4. Breakout details with Live Price fetching
-    try:
-        r = supabase.table("live_breakouts") \
-            .select("symbol, breakout_price, breakout_time, percent_move, high_price, exit_reason") \
-            .eq("breakout_date", date_str) \
-            .execute()
-
-        breakouts_data = r.data or []
-        
-        # --- NEW: Fetch live prices for these breakouts ---
-        if breakouts_data:
-            breakout_symbols = [f"NSE:{b['symbol']}" for b in breakouts_data]
-            try:
-                # Fetch quotes from Kite for all breakout stocks
-                live_quotes = kite.quote(breakout_symbols)
-                
-                for b in breakouts_data:
-                    sym_key = f"NSE:{b['symbol']}"
-                    if sym_key in live_quotes:
-                        # Add current_price to the object sent to frontend
-                        b["current_price"] = live_quotes[sym_key].get("last_price")
-                    else:
-                        b["current_price"] = b["breakout_price"] # Fallback
-            except Exception as e:
-                print(f"⚠️ Failed to fetch live prices for breakouts: {e}")
-
-        result["breakouts"] = breakouts_data
-        for b in result["breakouts"]:
-            exit_reason = b.get("exit_reason") or ""
-            if "Target" in exit_reason:
-                b["status"] = "Target Hit"
-            elif "SL" in exit_reason:
-                b["status"] = "SL Hit"
-            elif "Stagnant" in exit_reason:
-                b["status"] = "Circuit/Stagnant"
-            elif "EOD" in exit_reason:
-                b["status"] = "EOD Exit"
-            else:
-                b["status"] = "In Play"
-        result["breakout_count"] = len(result["breakouts"])
-
-    except Exception as e:
-        print(f"❌ Error building breakout dashboard: {e}")
-        result["breakouts"] = []
-        result["breakout_count"] = 0
-
-    # 5. Exit conditions + PnL from Google Sheet
-    sl_hit = 0
-    target_hit = 0
-    eod_exit = 0
-    pnl_list = []
-
-    if sheet:
-        try:
-            all_rows = sheet.get_all_values()
-            for row in all_rows[1:]:
-                if len(row) < 14:
-                    continue
-                row_date = row[0][:10] if row[0] else ""
-                if row_date != date_str:
-                    continue
-                exit_reason = row[12].strip() if len(row) > 12 else ""
-                if "SL" in exit_reason:
-                    sl_hit += 1
-                elif "Target" in exit_reason:
-                    target_hit += 1
-                elif "EOD" in exit_reason:
-                    eod_exit += 1
-                pnl_str = row[13].replace("%", "").strip() if len(row) > 13 else "0"
-                try:
-                    pnl_list.append({
-                        "symbol": row[1], 
-                        "pnl": float(pnl_str),
-                        "percent_move": float(pnl_str)
-                    })
-                except:
-                    pass
-        except:
-            pass
-
-    result["exit_conditions"] = {
-        "sl_hit": sl_hit,
-        "target_hit": target_hit,
-        "eod_exit": eod_exit
-    }
-
-    overall_pnl = round(sum(p["pnl"] for p in pnl_list) / len(pnl_list), 2) if pnl_list else 0
-    result["pnl"] = {
-        "overall": overall_pnl,
-        "stocks": pnl_list
-    }
-
-    return result
 
 @app.websocket("/ws/options")
 async def websocket_options_endpoint(websocket: WebSocket):
