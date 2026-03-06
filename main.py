@@ -1,4 +1,5 @@
 import os
+import time
 import pandas as pd
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 import httpx
@@ -16,6 +17,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from utils.options_streamer import ws_manager, start_kite_ticker, is_candle_green
 from utils.options_streamer import ACTIVE_OPTION_TRADES
 import asyncio
+import threading
 
 # Cache for NFO instruments — refreshed once per day
 _nfo_cache = {"data": None, "date": None}
@@ -53,6 +55,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def get_db_count(date_str: str, tier=None):
+    """Helper to fetch monitor counts from Supabase."""
+    try:
+        if tier:
+            exact_r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).eq("monitoring_tier", tier).execute()
+            count = exact_r.count or 0
+            if count == 0:
+                fallback_r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).ilike("monitoring_tier", f"%{tier}%").execute()
+                count = fallback_r.count or 0
+        else:
+            r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).execute()
+            count = r.count or 0
+        return count
+    except Exception as e:
+        logger.error(f"[get_count] Error: {e}")
+        return 0
 
 def build_dashboard_data(requested_date: str):
     """Builds comprehensive dashboard data for a given date (optimized for breakout page)."""
@@ -67,25 +85,6 @@ def build_dashboard_data(requested_date: str):
         "fast_tier_symbols": [],  # Key for "Fast Tier" UI
         "monitor_count": 0  # Key for "Monitor List" UI
     }
-    
-    def get_count(date_str: str, tier=None):
-        try:
-            if tier:
-                exact_r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).eq("monitoring_tier", tier).execute()
-                count = exact_r.count or 0
-                
-                if count == 0:
-                    fallback_r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).ilike("monitoring_tier", f"%{tier}%").execute()
-                    count = fallback_r.count or 0
-                    
-            else:
-                r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).execute()
-                count = r.count or 0
-                
-            return count
-        except Exception as e:
-            logger.error(f"[get_count] Error: {e}")
-            return 0
     
     # 1. FAST TIER: Query, Enrich, Log (matches your logs: 8 stocks)
     try:
@@ -112,8 +111,7 @@ def build_dashboard_data(requested_date: str):
         result["fast_tier_symbols"] = []
     
     # 2. MONITOR COUNT: Total from DB (matches logs: 1152+)
-    result["monitor_count"] = get_count(date_str)
-    
+    result["monitor_count"] = get_db_count(date_str)
     # 3. LIVE PRICES: Fetch current for fast symbols (Kite, non-blocking)
     try:
         if result["fast_tier_symbols"]:
@@ -210,40 +208,51 @@ class PayloadRequest(BaseModel):
 async def get_paper_balance():
     return {"balance": get_db_balance()}
     
+def run_startup_algo_flow():
+    """Runs the monitor list build and monitoring loop on server startup."""
+    try:
+        today_str = date.today().strftime("%Y-%m-%d")
+        completion_flag = supabase.table("kite_config") \
+            .select("value") \
+            .eq("key_name", f"monitor_list_complete_{today_str}") \
+            .execute()
+
+        if completion_flag.data and completion_flag.data[0]["value"] == "true":
+            logger.info(f"✅ Monitor list fully built for {today_str}. Skipping build.")
+        else:
+            logger.info(f"🔄 Monitor list incomplete or missing for {today_str}. Building now...")
+            create_monitor_list()
+        start_finding_breakouts()
+    except Exception as e:
+        logger.error(f"❌ Startup algo flow error: {e}")
+
+def preload_nfo_data():
+    """Background task to fetch NFO instruments so UI loads instantly."""
+    try:
+        logger.info("⏳ Preloading NFO instruments to RAM...")
+        _nfo_cache["data"] = kite.instruments("NFO")
+        _nfo_cache["date"] = date.today()
+        logger.info("✅ NFO instruments preloaded! UI will now load instantly.")
+    except Exception as e:
+        logger.error(f"Failed to preload NFO: {e}")
+
 @app.on_event("startup")
 async def startup_event():
     logger.info("🚀 Starting FastAPI Server & Syncing Session...")
     
-    # 1. Sync Token (from your previous fix)
-    from utils.common import get_active_token, kite
+    # 1. Sync Token
     token = get_active_token()
     if token:
         kite.set_access_token(token)
     
+    # 🟢 NEW: Preload the massive NFO instrument list in the background
+    threading.Thread(target=preload_nfo_data, daemon=True).start()
+    
     # 2. Start the Options Ticker (The "Ears")
     start_kite_ticker()
     
-    # This fires and forgets the full algo flow (build monitor list + start monitoring)
-    async def full_startup_flow():
-        def run():
-            try:
-                today_str = date.today().strftime("%Y-%m-%d")
-                completion_flag = supabase.table("kite_config") \
-                    .select("value") \
-                    .eq("key_name", f"monitor_list_complete_{today_str}") \
-                    .execute()
-
-                if completion_flag.data and completion_flag.data[0]["value"] == "true":
-                    logger.info(f"✅ Monitor list fully built for {today_str}. Skipping build.")
-                else:
-                    logger.info(f"🔄 Monitor list incomplete or missing for {today_str}. Building now...")
-                    create_monitor_list()
-                start_finding_breakouts()
-            except Exception as e:
-                logger.error(f"❌ Startup algo flow error: {e}")
-        await asyncio.to_thread(run)
-
-    asyncio.create_task(full_startup_flow())
+    # 3. Fire and forget the full algo flow without nested functions
+    await asyncio.to_thread(run_startup_algo_flow)
     logger.info("📡 Stock Breakout Monitor + Monitor List build started in background.")
 
 @app.post("/api/place-option-order")
@@ -251,6 +260,7 @@ async def place_option_order(data: dict):
     symbol = data.get("symbol")
     price = data.get("price")
     side = data.get("side", "BUY")
+    user_qty = data.get("quantity")  # 🟢 Capture what the user actually typed in the UI
 
     # 🟢 DUPLICATE PROTECTION
     existing_check = supabase.table("paper_trades").select("id").eq("symbol", symbol).eq("status", "OPEN").execute()
@@ -262,13 +272,18 @@ async def place_option_order(data: dict):
         nifty_quote = kite.quote("NSE:NIFTY 50")
         nifty_spot_at_order = nifty_quote["NSE:NIFTY 50"]["last_price"]
         
-        instruments = kite.instruments("NFO")
-        instrument_info = next((i for i in instruments if i['tradingsymbol'] == symbol), None)
-        qty = instrument_info['lot_size'] if instrument_info else 50
+        # 🟢 If user typed a quantity, use it. Otherwise, fetch Kite's default lot size.
+        if user_qty and int(user_qty) > 0:
+            qty = int(user_qty)
+        else:
+            instruments = kite.instruments("NFO")
+            instrument_info = next((i for i in instruments if i['tradingsymbol'] == symbol), None)
+            qty = instrument_info['lot_size'] if instrument_info else 50
+            
     except Exception as e:
         logger.warning(f"⚠️ Kite fetch failed, using fallbacks: {e}")
         nifty_spot_at_order = None
-        qty = 50
+        qty = int(user_qty) if (user_qty and int(user_qty) > 0) else 50
 
     # 🟢 VERIFY FUNDS
     current_balance = get_db_balance()
@@ -308,52 +323,49 @@ async def get_active_trades():
         logger.error(f"Error fetching trades: {e}")
         return []
 
+
+def trigger_full_algo_flow():
+    """Background task to force a rebuild and restart of monitoring."""
+    try:
+        today_str = date.today().strftime("%Y-%m-%d")
+
+        # 🔄 RE-FETCH AND FORCE SET TOKEN
+        token_response = supabase.table("kite_config") \
+            .select("value") \
+            .eq("key_name", "access_token") \
+            .execute()
+
+        if token_response.data and len(token_response.data) > 0:
+            new_token = token_response.data[0]["value"]
+            kite.set_access_token(new_token)
+            logger.info(f"✅ Token synced from DB (starts with {new_token[:5]}...)")
+        else:
+            logger.error("❌ CRITICAL: No access_token found in kite_config table.")
+            return
+
+        # 1. Check/Build monitor list
+        existing = supabase.table("monitor_list") \
+            .select("symbol", count="exact") \
+            .eq("date", today_str) \
+            .limit(1) \
+            .execute()
+
+        if not existing.count:
+            print(f"🔄 {today_str}: No monitor list found. Building now...")
+            create_monitor_list()
+        else:
+            print(f"✅ {today_str}: Monitor list already exists. Skipping build.")
+
+        # 2. Start monitoring immediately after build completes
+        start_finding_breakouts()
+        
+    except Exception as e:
+        print(f"❌ Background Algo Flow Error: {e}")
+
 @app.api_route("/start-finding-breakouts", methods=["GET", "POST"])
 async def handle_find_breakouts(background_tasks: BackgroundTasks):
-    """
-    Triggers the build and monitor flow in the background to prevent 
-    HTTP timeouts and handle memory spikes safely.
-    """
-    def full_algo_flow():
-        try:
-            today_str = date.today().strftime("%Y-%m-%d")
-
-            # 🔄 RE-FETCH AND FORCE SET TOKEN
-            token_response = supabase.table("kite_config") \
-                .select("value") \
-                .eq("key_name", "access_token") \
-                .execute()
-
-            if token_response.data and len(token_response.data) > 0:
-                new_token = token_response.data[0]["value"]
-                kite.set_access_token(new_token)
-                logger.info(f"✅ Token synced from DB (starts with {new_token[:5]}...)")
-            else:
-                logger.error("❌ CRITICAL: No access_token found in kite_config table.")
-                return # Stop the flow if no token exists
-
-            # 1. Check/Build monitor list inside the background task
-            existing = supabase.table("monitor_list") \
-                .select("symbol", count="exact") \
-                .eq("date", today_str) \
-                .limit(1) \
-                .execute()
-
-            if not existing.count:
-                print(f"🔄 {today_str}: No monitor list found. Building now...")
-                create_monitor_list()
-            else:
-                print(f"✅ {today_str}: Monitor list already exists. Skipping build.")
-
-            # 2. Start monitoring immediately after build completes
-            start_finding_breakouts()
-            
-        except Exception as e:
-            print(f"❌ Background Algo Flow Error: {e}")
-
-    # Add the combined task to background
-    background_tasks.add_task(full_algo_flow)
-
+    """Triggers the build and monitor flow in the background."""
+    background_tasks.add_task(trigger_full_algo_flow)
     return {
         "status": "success", 
         "message": "Monitor list build and breakout monitoring started in background."
@@ -406,9 +418,16 @@ async def get_option_chain_snapshot():
     res = supabase.table("market_snapshots").select("data").order("created_at", desc=True).limit(1).execute()
     return res.data[0]["data"] if res.data else []
 
+_option_chain_cache = {"data": [], "ts": 0}
+
 @app.get("/api/get-live-option-chain")
 async def get_live_option_chain():
     """Fetches real-time LTP from Kite — works during AND after market hours."""
+    
+    # 🟢 FAST CACHE: If fetched within the last 2 seconds, return instantly!
+    if time.time() - _option_chain_cache["ts"] < 2 and _option_chain_cache["data"]:
+        return _option_chain_cache["data"]
+
     try:
         # Use daily cache — instruments only change on expiry day
         today = date.today()
@@ -468,6 +487,11 @@ async def get_live_option_chain():
             })
 
         logger.info(f"✅ Option chain: {len(live_data)} entries, expiry={current_expiry}, spot={spot_price}")
+        
+        # 🟢 SAVE TO CACHE: Store the result and current timestamp
+        _option_chain_cache["data"] = live_data
+        _option_chain_cache["ts"] = time.time()
+        
         return live_data
 
     except Exception as e:

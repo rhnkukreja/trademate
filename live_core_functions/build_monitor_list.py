@@ -7,8 +7,23 @@ from utils.common import supabase, kite, logger, batch_upsert_supabase, next_pri
 import io
 import requests
 from concurrent.futures import ThreadPoolExecutor
+import threading
 
 # -------------------------- Helper Functions -------------------------
+_kite_lock = threading.Lock()
+_last_request_time = 0
+
+def get_historical_data_safe(*args, **kwargs):
+    """Thread-safe rate limiter to maximize Kite's 3 req/sec limit."""
+    global _last_request_time
+    with _kite_lock:
+        now = time.time()
+        elapsed = now - _last_request_time
+        if elapsed < 0.34:
+            time.sleep(0.34 - elapsed)
+        _last_request_time = time.time()
+    return kite.historical_data(*args, **kwargs)
+
 def get_kite_token_map():
     """Builds symbol -> instrument_token map from Kite"""
     return {
@@ -166,9 +181,8 @@ def fetch_single_stock_daily(stock, from_date, to_date):
     
     for attempt in range(retries):
         try:
-            # 3 workers sleeping 1s each = exactly 3 req/sec. NO 429 PENALTIES!
-            time.sleep(1.0)  
-            data = kite.historical_data(instrument_token=token, from_date=from_date, to_date=to_date, interval="day")
+            # 🟢 FIX: Uses the perfect 0.34s rate limiter instead of 1.0s sleep
+            data = get_historical_data_safe(instrument_token=token, from_date=from_date, to_date=to_date, interval="day")
             if data:
                 df = pd.DataFrame(data)
                 df = df.rename(columns={"date": "date", "open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume"})
@@ -177,7 +191,7 @@ def fetch_single_stock_daily(stock, from_date, to_date):
             return symbol, None
         except Exception as e:
             if attempt < retries - 1:
-                time.sleep(2) 
+                time.sleep(1) 
             else:
                 logger.error(f"Failed to fetch daily for {symbol}: {e}")
     return symbol, None
@@ -190,9 +204,8 @@ def fetch_single_stock_hourly(stock, hourly_start, to_date):
     
     for attempt in range(retries):
         try:
-            # 3 workers sleeping 1s each = exactly 3 req/sec. NO 429 PENALTIES!
-            time.sleep(1.0)  
-            data = kite.historical_data(instrument_token=token, from_date=hourly_start, to_date=to_date, interval="60minute")
+            # 🟢 FIX: Uses the perfect 0.34s rate limiter instead of 1.0s sleep
+            data = get_historical_data_safe(instrument_token=token, from_date=hourly_start, to_date=to_date, interval="60minute")
             if data:
                 df = pd.DataFrame(data)
                 df = df.rename(columns={"date": "date", "open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume"})
@@ -202,7 +215,7 @@ def fetch_single_stock_hourly(stock, hourly_start, to_date):
             return symbol, None
         except Exception as e:
             if attempt < retries - 1:
-                time.sleep(2) 
+                time.sleep(1) 
             else:
                 logger.error(f"Failed to fetch hourly for {symbol}: {e}")
     return symbol, None
@@ -211,7 +224,7 @@ def preload_daily_data(stocks, from_date, to_date):
     """Fetches ONLY daily data using ThreadPoolExecutor without nested functions."""
     data_dict = {}
     
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         # Submit all tasks to the thread pool
         futures = [executor.submit(fetch_single_stock_daily, stock, from_date, to_date) for stock in stocks]
         
@@ -228,7 +241,7 @@ def preload_hourly_data(stocks, from_date, to_date):
     data_dict = {}
     hourly_start = max(from_date, to_date - datetime.timedelta(days=100))
     
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         # Submit all tasks to the thread pool
         futures = [executor.submit(fetch_single_stock_hourly, stock, hourly_start, to_date) for stock in stocks]
         
@@ -300,7 +313,7 @@ def process_batch(batch_info):
             last_price = q_data.get("last_price") or q_data.get("ltp")
             open_price = q_data.get("open") or q_data.get("ohlc", {}).get("open")
             
-            if last_price and open_price and open_price > 0:
+            if last_price > 0:
                 quotes[sym] = {"last_price": last_price, "open": open_price}
                 valid_stocks.append(stock)
                 
@@ -418,7 +431,7 @@ def process_batch(batch_info):
 
         monitor_entry = {
             "symbol": symbol,
-            "date": datetime.date.today().strftime("%Y-%m-%d"),
+            "date": to_date.strftime("%Y-%m-%d"),
             "latest_news": None,
             "open_price": float(current_open),
             "current_price": float(current_ltp),
