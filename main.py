@@ -17,6 +17,9 @@ from utils.options_streamer import ws_manager, start_kite_ticker, is_candle_gree
 from utils.options_streamer import ACTIVE_OPTION_TRADES
 import asyncio
 
+# Cache for NFO instruments — refreshed once per day
+_nfo_cache = {"data": None, "date": None}
+
 def get_db_balance():
     """Consolidated helper to fetch paper balance."""
     try:
@@ -401,9 +404,13 @@ async def get_option_chain_snapshot():
 async def get_live_option_chain():
     """Fetches real-time LTP from Kite — works during AND after market hours."""
     try:
-        # Always fetch fresh instruments — never rely on cache here
-        instruments = kite.instruments("NFO")
-        df = pd.DataFrame(instruments)
+        # Use daily cache — instruments only change on expiry day
+        today = date.today()
+        if _nfo_cache["data"] is None or _nfo_cache["date"] != today:
+            logger.info("🔄 Refreshing NFO instruments cache...")
+            _nfo_cache["data"] = kite.instruments("NFO")
+            _nfo_cache["date"] = today
+        df = pd.DataFrame(_nfo_cache["data"])
 
         # Filter NIFTY options only
         df_nifty = df[(df["name"] == "NIFTY") & (df["instrument_type"].isin(["CE", "PE"]))].copy()

@@ -6,7 +6,6 @@ import gc
 from utils.common import supabase, kite, logger, batch_upsert_supabase, next_price_above, get_active_token
 import io
 import requests
-from utils.news_agent import get_stock_news
 from concurrent.futures import ThreadPoolExecutor
 
 # -------------------------- Helper Functions -------------------------
@@ -365,8 +364,6 @@ def process_batch(batch_info):
     hourly_data_dict = preload_hourly_data(surviving_stocks, from_date, yesterday)
 
     surviving_symbols = [s["symbol"] for s in surviving_stocks]
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        news_map = dict(zip(surviving_symbols, executor.map(get_stock_news, surviving_symbols)))
 
     for stock in surviving_stocks:
         symbol = stock["symbol"]
@@ -418,12 +415,11 @@ def process_batch(batch_info):
         avg_range = float(df_hist_10["range_pct"].mean())
 
         rsi_at_entry = calculate_rsi(df_daily["close"]).iloc[-1] if len(df_daily) >= 15 else None
-        stock_news = news_map.get(symbol)
 
         monitor_entry = {
             "symbol": symbol,
             "date": datetime.date.today().strftime("%Y-%m-%d"),
-            "latest_news": stock_news,
+            "latest_news": None,
             "open_price": float(current_open),
             "current_price": float(current_ltp),
             "min_ma": float(min_ma),
@@ -522,6 +518,6 @@ def create_monitor_list():
         logger.info(f"✅ Completion flag written for {analysis_date}")
     except Exception as e:
         logger.error(f"❌ Failed to write completion flag: {e}")
-        
+
 if __name__ == "__main__":
     create_monitor_list()
