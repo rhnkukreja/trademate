@@ -57,8 +57,7 @@ app.add_middleware(
 def build_dashboard_data(requested_date: str):
     """Builds comprehensive dashboard data for a given date (optimized for breakout page)."""
     date_str = requested_date  # ISO from frontend (e.g., "2026-03-05")
-    logger.info(f"[Dashboard] Building data for date: {date_str} (IST today: {get_ist_time().strftime('%Y-%m-%d')})")
-    
+
     result = {
         "date": date_str,
         "breakouts": [],  # For "Breakout Price & Time" section
@@ -74,15 +73,15 @@ def build_dashboard_data(requested_date: str):
             if tier:
                 exact_r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).eq("monitoring_tier", tier).execute()
                 count = exact_r.count or 0
-                logger.info(f"[get_count] Exact '{tier}' on {date_str}: {count}")
+                
                 if count == 0:
                     fallback_r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).ilike("monitoring_tier", f"%{tier}%").execute()
                     count = fallback_r.count or 0
-                    logger.info(f"[get_count] Fallback '%{tier}%' on {date_str}: {count}")
+                    
             else:
                 r = supabase.table("monitor_list").select("symbol", count="exact").eq("date", date_str).execute()
                 count = r.count or 0
-                logger.info(f"[get_count] Total on {date_str}: {count} (data_len: {len(r.data or [])})")
+                
             return count
         except Exception as e:
             logger.error(f"[get_count] Error: {e}")
@@ -114,7 +113,6 @@ def build_dashboard_data(requested_date: str):
     
     # 2. MONITOR COUNT: Total from DB (matches logs: 1152+)
     result["monitor_count"] = get_count(date_str)
-    logger.info(f"[Dashboard] Final monitor_count: {result['monitor_count']}")
     
     # 3. LIVE PRICES: Fetch current for fast symbols (Kite, non-blocking)
     try:
@@ -125,7 +123,7 @@ def build_dashboard_data(requested_date: str):
                 q_key = f"NSE:{s['symbol']}"
                 q = quotes.get(q_key, {})
                 s["current_price"] = round(q.get('last_price', s['breakout_price'] or 0), 2)
-            logger.info(f"[Dashboard] Updated {len(result['fast_tier_symbols'])} live prices")
+            
     except Exception as e:
         logger.error(f"[Dashboard] Live prices failed: {e}")
     
@@ -133,7 +131,7 @@ def build_dashboard_data(requested_date: str):
     try:
         breakouts_r = supabase.table("live_breakouts").select("*").eq("breakout_date", date_str).order("breakout_time").execute()
         result["breakouts"] = breakouts_r.data or []
-        logger.info(f"[Dashboard] Breakouts: {len(result['breakouts'])}")
+       
     except Exception as e:
         logger.error(f"[Dashboard] Breakouts failed: {e}")
         result["breakouts"] = []
@@ -179,7 +177,7 @@ async def dashboard_endpoint(date: str = None):
         _dashboard_cache["data"] = data
         _dashboard_cache["date"] = date
         _dashboard_cache["ts"] = time.time()
-        logger.info(f"[API/Dashboard] Served for {date}: {data['fast_tier_count']} fast, {data['monitor_count']} monitor")
+        logger.info(f"[API/Dashboard] {date}: fast={data['fast_tier_count']}, monitor={data['monitor_count']}, breakouts={len(data.get('breakouts', []))}")
         return data
     except Exception as e:
         logger.error(f"[API/Dashboard] Error for {date}: {e}")
@@ -234,28 +232,12 @@ async def place_option_order(data: dict):
     price = data.get("price")
     side = data.get("side", "BUY")
 
-    # 🟢 DUPLICATE PROTECTION: Check if trade already exists
-    existing_check = supabase.table("paper_trades") \
-        .select("id") \
-        .eq("symbol", symbol) \
-        .eq("status", "OPEN") \
-        .execute()
-
+    # 🟢 DUPLICATE PROTECTION
+    existing_check = supabase.table("paper_trades").select("id").eq("symbol", symbol).eq("status", "OPEN").execute()
     if existing_check.data and len(existing_check.data) > 0:
-        logger.warning(f"⚠️ Duplicate Blocked: {symbol} already has an open position.")
         return {"status": "ignored", "message": "Position already open"}
     
-    # 🟢 1. FETCH & VERIFY FUNDS (Refactored)
-    current_balance = get_db_balance()
-    qty = data.get("quantity", 50)
-    margin_required = price * qty
-    
-    if margin_required > current_balance:
-        logger.warning(f"❌ Insufficient Funds: Need {margin_required}, have {current_balance}")
-        return {"status": "error", "message": "Don't have enough funds, please add funds."}
-    
-    # 🟢 FIXED: Default to 50 if Kite fails so balance still updates
-    # 🟢 DYNAMIC LOT SIZE & NIFTY SPOT TRACKING
+    # 🟢 FETCH DYNAMIC DATA: Lot Size & Nifty Spot
     try:
         nifty_quote = kite.quote("NSE:NIFTY 50")
         nifty_spot_at_order = nifty_quote["NSE:NIFTY 50"]["last_price"]
@@ -265,40 +247,34 @@ async def place_option_order(data: dict):
         qty = instrument_info['lot_size'] if instrument_info else 50
     except Exception as e:
         logger.warning(f"⚠️ Kite fetch failed, using fallbacks: {e}")
-        nifty_spot_at_order = 0
+        nifty_spot_at_order = None
         qty = 50
 
-    # 🟢 2. UNIFIED RISK-REWARD & MARGIN
+    # 🟢 VERIFY FUNDS
+    current_balance = get_db_balance()
+    margin_required = price * qty
+    if margin_required > current_balance:
+        return {"status": "error", "message": "Insufficient funds."}
+    
+    # 🟢 CALCULATE RISK/REWARD
     sl = round(price * 0.99, 2) if side == "BUY" else round(price * 1.01, 2)
     target = round(price * 1.02, 2) if side == "BUY" else round(price * 0.98, 2)
 
-    # Add nifty_spot to trade_record
+    # 🟢 SAVE TO MEMORY & DB
+    ACTIVE_OPTION_TRADES[symbol] = {"entry": price, "qty": qty, "type": side, "sl": sl, "target": target}
+    
     trade_record = {
         "symbol": symbol, "entry_price": price, "quantity": qty,
         "side": side, "status": "OPEN", "sl_price": sl, "target_price": target,
         "nifty_spot_at_order": nifty_spot_at_order,
         "created_at": datetime.now().isoformat()
     }
-    margin_required = price * qty
-
-    # 🟢 3. ATOMIC EXECUTION (Memory -> DB -> Balance)
-    ACTIVE_OPTION_TRADES[symbol] = {"entry": price, "qty": qty, "type": side, "sl": sl, "target": target}
     
-    trade_record = {
-        "symbol": symbol, "entry_price": price, "quantity": qty,
-        "side": side, "status": "OPEN", "sl_price": sl, "target_price": target,
-        "created_at": datetime.now().isoformat()
-    }
-    
-    # Run DB insertions
     supabase.table("paper_trades").insert(trade_record).execute()
     
-    # Unified Balance Update
+    # Update Balance
     new_balance = round(current_balance - margin_required, 2)
-    update_res = supabase.table("kite_config").update({"value": str(new_balance)}).eq("key_name", "paper_balance").execute()
-    
-    if not update_res.data:
-        logger.error("❌ Failed to update balance in Supabase. Ensure row 'paper_balance' exists.")
+    supabase.table("kite_config").update({"value": str(new_balance)}).eq("key_name", "paper_balance").execute()
     
     return {"status": "success", "verified_quantity": qty, "new_balance": new_balance}
 
