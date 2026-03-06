@@ -513,5 +513,15 @@ def create_monitor_list():
             logger.error(f"❌ Batch {batch_idx} failed: {e}")
 
     logger.info("🏁 Monitor List Builder completed.")
+    # Write completion flag so server restarts don't re-trigger a full rebuild
+    try:
+        supabase.table("kite_config").upsert({
+            "key_name": f"monitor_list_complete_{analysis_date.strftime('%Y-%m-%d')}",
+            "value": "true"
+        }).execute()
+        logger.info(f"✅ Completion flag written for {analysis_date}")
+    except Exception as e:
+        logger.error(f"❌ Failed to write completion flag: {e}")
+        
 if __name__ == "__main__":
     create_monitor_list()

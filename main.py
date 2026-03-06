@@ -94,7 +94,7 @@ def build_dashboard_data(requested_date: str):
         
         fast_symbols_enriched = []
         for row in (r.data or []):
-            candidate = row.get("breakout_price_candidate") or row.get("breakout_price") or 0
+            candidate = row.get("max_ma") or row.get("breakout_price_candidate") or row.get("breakout_price") or 0
             breakout_price = round(float(candidate), 2) if candidate else None
             fast_symbols_enriched.append({
                 "symbol": row["symbol"],  # e.g., 'CARERATING'
@@ -197,16 +197,16 @@ async def startup_event():
         def run():
             try:
                 today_str = date.today().strftime("%Y-%m-%d")
-                existing = supabase.table("monitor_list") \
-                    .select("symbol", count="exact") \
-                    .eq("date", today_str) \
-                    .limit(1) \
+                completion_flag = supabase.table("kite_config") \
+                    .select("value") \
+                    .eq("key_name", f"monitor_list_complete_{today_str}") \
                     .execute()
-                if not existing.count:
-                    logger.info(f"🔄 No monitor list for {today_str}. Building now...")
-                    create_monitor_list()
+
+                if completion_flag.data and completion_flag.data[0]["value"] == "true":
+                    logger.info(f"✅ Monitor list fully built for {today_str}. Skipping build.")
                 else:
-                    logger.info(f"✅ Monitor list for {today_str} already exists. Skipping build.")
+                    logger.info(f"🔄 Monitor list incomplete or missing for {today_str}. Building now...")
+                    create_monitor_list()
                 start_finding_breakouts()
             except Exception as e:
                 logger.error(f"❌ Startup algo flow error: {e}")
