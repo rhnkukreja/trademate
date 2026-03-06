@@ -192,9 +192,28 @@ async def startup_event():
     # 2. Start the Options Ticker (The "Ears")
     start_kite_ticker()
     
-    # This fires and forgets the monitor into the background immediately
-    asyncio.create_task(asyncio.to_thread(start_finding_breakouts))
-    logger.info("📡 Stock Breakout Monitor started in background.")
+    # This fires and forgets the full algo flow (build monitor list + start monitoring)
+    async def full_startup_flow():
+        def run():
+            try:
+                today_str = date.today().strftime("%Y-%m-%d")
+                existing = supabase.table("monitor_list") \
+                    .select("symbol", count="exact") \
+                    .eq("date", today_str) \
+                    .limit(1) \
+                    .execute()
+                if not existing.count:
+                    logger.info(f"🔄 No monitor list for {today_str}. Building now...")
+                    create_monitor_list()
+                else:
+                    logger.info(f"✅ Monitor list for {today_str} already exists. Skipping build.")
+                start_finding_breakouts()
+            except Exception as e:
+                logger.error(f"❌ Startup algo flow error: {e}")
+        await asyncio.to_thread(run)
+
+    asyncio.create_task(full_startup_flow())
+    logger.info("📡 Stock Breakout Monitor + Monitor List build started in background.")
 
 @app.post("/api/place-option-order")
 async def place_option_order(data: dict):
@@ -223,18 +242,30 @@ async def place_option_order(data: dict):
         return {"status": "error", "message": "Don't have enough funds, please add funds."}
     
     # 🟢 FIXED: Default to 50 if Kite fails so balance still updates
-    qty = 50
+    # 🟢 DYNAMIC LOT SIZE & NIFTY SPOT TRACKING
     try:
+        nifty_quote = kite.quote("NSE:NIFTY 50")
+        nifty_spot_at_order = nifty_quote["NSE:NIFTY 50"]["last_price"]
+        
         instruments = kite.instruments("NFO")
         instrument_info = next((i for i in instruments if i['tradingsymbol'] == symbol), None)
-        if instrument_info:
-            qty = instrument_info['lot_size']
+        qty = instrument_info['lot_size'] if instrument_info else 50
     except Exception as e:
-        logger.warning(f"⚠️ Using default lot size 50: {e}")
+        logger.warning(f"⚠️ Kite fetch failed, using fallbacks: {e}")
+        nifty_spot_at_order = 0
+        qty = 50
 
     # 🟢 2. UNIFIED RISK-REWARD & MARGIN
     sl = round(price * 0.99, 2) if side == "BUY" else round(price * 1.01, 2)
     target = round(price * 1.02, 2) if side == "BUY" else round(price * 0.98, 2)
+
+    # Add nifty_spot to trade_record
+    trade_record = {
+        "symbol": symbol, "entry_price": price, "quantity": qty,
+        "side": side, "status": "OPEN", "sl_price": sl, "target_price": target,
+        "nifty_spot_at_order": nifty_spot_at_order,
+        "created_at": datetime.now().isoformat()
+    }
     margin_required = price * qty
 
     # 🟢 3. ATOMIC EXECUTION (Memory -> DB -> Balance)
