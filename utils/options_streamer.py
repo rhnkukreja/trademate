@@ -355,34 +355,62 @@ def start_internal_ui_test():
         on_ticks(None, fake_tick_packet)
         time.sleep(2)
 
+strategy_history_cache = {"date": None, "hits": []}
+
 async def global_strategy_monitor():
-    """Background task to globally monitor Nifty strategy and broadcast alerts."""
+    """Background task to globally monitor Nifty strategy and broadcast live status."""
     global ws_manager, kite
+    last_alert_time = 0
+
     while True:
         try:
+            # 1. Reset history on a new day
+            today_str = get_ist_time().strftime("%Y-%m-%d")
+            if strategy_history_cache["date"] != today_str:
+                strategy_history_cache["date"] = today_str
+                strategy_history_cache["hits"] = []
+
+            # 2. Check individual candle statuses
             is_5m  = is_candle_green(5)
             is_15m = is_candle_green(15)
             is_1h  = is_candle_green(60)
             
-            if is_5m and is_15m and is_1h:
-                nifty_quote = kite.quote("NSE:NIFTY 50")
-                nifty_spot = nifty_quote["NSE:NIFTY 50"]["last_price"]
-                
-                itm_strike = round((nifty_spot - 150) / 50) * 50
-                
-                alert_payload = {
-                    "type": "STRATEGY_ALERT",
-                    "strategy": "THREE_GREEN_CANDLES",
-                    "message": f"🟢 3 Green Candles Met! Recommended: Buy NIFTY {itm_strike} CE",
-                    "strike": itm_strike,
-                    "spot": nifty_spot,
-                    "timestamp": get_ist_time().strftime("%H:%M:%S")
-                }
-                
-                await ws_manager.broadcast(alert_payload)
-                await asyncio.sleep(300) 
-            else:
-                await asyncio.sleep(60)
+            all_green = is_5m and is_15m and is_1h
+            current_time_str = get_ist_time().strftime("%H:%M:%S")
+            
+            # 3. Build the live status payload
+            payload = {
+                "type": "STRATEGY_STATUS",
+                "status": {"5m": is_5m, "15m": is_15m, "1h": is_1h},
+                "is_met": all_green,
+                "history": strategy_history_cache["hits"]
+            }
+            
+            if all_green:
+                current_ts = time.time()
+                # 4. Only record history and trigger the top banner if 5 mins have passed since the last hit
+                if current_ts - last_alert_time > 300:
+                    strategy_history_cache["hits"].append(current_time_str)
+                    last_alert_time = current_ts
+                    
+                    try:
+                        nifty_quote = kite.quote("NSE:NIFTY 50")
+                        nifty_spot = nifty_quote["NSE:NIFTY 50"]["last_price"]
+                        itm_strike = round((nifty_spot - 150) / 50) * 50
+                        
+                        payload["alert"] = {
+                            "message": f"🟢 3 Green Candles Met! Recommended: Buy NIFTY {itm_strike} CE",
+                            "timestamp": current_time_str
+                        }
+                    except Exception as e:
+                        logger.error(f"Failed to fetch Nifty quote for alert: {e}")
+            
+            # 5. Attach updated history and broadcast
+            payload["history"] = strategy_history_cache["hits"]
+            await ws_manager.broadcast(payload)
+            
+            # Pause for 1 minute and check again
+            await asyncio.sleep(60)
                 
         except Exception as e:
             logger.error(f"Global strategy monitor error: {e}")
