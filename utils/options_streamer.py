@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timedelta, date
 from fastapi import WebSocket
 from kiteconnect import KiteTicker
-from utils.common import kite, logger, get_active_token, supabase
+from utils.common import kite, logger, get_active_token, supabase, get_ist_time
 import math
 import random
 
@@ -354,3 +354,36 @@ def start_internal_ui_test():
         # Fire mock data into the real WebSocket broadcaster
         on_ticks(None, fake_tick_packet)
         time.sleep(2)
+
+async def global_strategy_monitor():
+    """Background task to globally monitor Nifty strategy and broadcast alerts."""
+    global ws_manager, kite
+    while True:
+        try:
+            is_5m  = is_candle_green(5)
+            is_15m = is_candle_green(15)
+            is_1h  = is_candle_green(60)
+            
+            if is_5m and is_15m and is_1h:
+                nifty_quote = kite.quote("NSE:NIFTY 50")
+                nifty_spot = nifty_quote["NSE:NIFTY 50"]["last_price"]
+                
+                itm_strike = round((nifty_spot - 150) / 50) * 50
+                
+                alert_payload = {
+                    "type": "STRATEGY_ALERT",
+                    "strategy": "THREE_GREEN_CANDLES",
+                    "message": f"🟢 3 Green Candles Met! Recommended: Buy NIFTY {itm_strike} CE",
+                    "strike": itm_strike,
+                    "spot": nifty_spot,
+                    "timestamp": get_ist_time().strftime("%H:%M:%S")
+                }
+                
+                await ws_manager.broadcast(alert_payload)
+                await asyncio.sleep(300) 
+            else:
+                await asyncio.sleep(60)
+                
+        except Exception as e:
+            logger.error(f"Global strategy monitor error: {e}")
+            await asyncio.sleep(60)

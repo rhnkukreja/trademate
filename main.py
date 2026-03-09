@@ -14,7 +14,7 @@ import json
 from utils.common import supabase, logger, get_active_token, kite, get_ist_time
 from datetime import date, datetime
 from fastapi import WebSocket, WebSocketDisconnect
-from utils.options_streamer import ws_manager, start_kite_ticker, is_candle_green
+from utils.options_streamer import ws_manager, start_kite_ticker, is_candle_green, global_strategy_monitor
 from utils.options_streamer import ACTIVE_OPTION_TRADES
 import utils.options_streamer as os_streamer
 import asyncio
@@ -246,17 +246,20 @@ async def startup_event():
     if token:
         kite.set_access_token(token)
     
-    # 🟢 FIX: Capture the REAL running event loop for broadcasts
+    # 2. Capture the REAL running event loop for WS broadcasts
     os_streamer.fastapi_loop = asyncio.get_running_loop()
     
-    # 2. Background Task: Options Ticker
+    # 3. Background Task: Options Ticker
     threading.Thread(target=start_kite_ticker, daemon=True).start()
     
-    # 3. Background Task: NFO Preload
+    # 4. Background Task: NFO Preload
     threading.Thread(target=preload_nfo_data, daemon=True).start()
     
-    # 4. Background Task: Breakout Monitoring
+    # 5. Background Task: Breakout Monitoring
     threading.Thread(target=run_startup_algo_flow, daemon=True).start()
+    
+    # 6. Background Task: Global Strategy Alerts (Async Task)
+    asyncio.create_task(global_strategy_monitor())
 
 @app.post("/api/place-option-order")
 async def place_option_order(data: dict):
