@@ -326,7 +326,6 @@ async def get_active_trades():
         logger.error(f"Error fetching trades: {e}")
         return []
 
-
 def trigger_full_algo_flow():
     """Background task to force a rebuild and restart of monitoring."""
     try:
@@ -364,6 +363,17 @@ def trigger_full_algo_flow():
         
     except Exception as e:
         print(f"❌ Background Algo Flow Error: {e}")
+
+@app.get("/api/get-closed-trades")
+async def get_closed_trades():
+    """Provides the UI with closed trades history from Supabase."""
+    try:
+        # Order by created_at descending so the newest exits are at the top
+        response = supabase.table("paper_trades").select("*").eq("status", "CLOSED").order("created_at", desc=True).execute()
+        return response.data
+    except Exception as e:
+        logger.error(f"Error fetching closed trades: {e}")
+        return []
 
 @app.api_route("/start-finding-breakouts", methods=["GET", "POST"])
 async def handle_find_breakouts(background_tasks: BackgroundTasks):
@@ -529,12 +539,26 @@ async def exit_option_trade(data: dict):
     pnl = (exit_price - entry_price) * quantity if side == "BUY" else (entry_price - exit_price) * quantity
     refund_amount = (entry_price * quantity) + pnl
 
+    # 🟢 Fetch Nifty Spot at Exit
+    try:
+        nifty_quote = kite.quote("NSE:NIFTY 50")
+        nifty_spot_at_exit = nifty_quote["NSE:NIFTY 50"]["last_price"]
+    except Exception as e:
+        logger.warning(f"⚠️ Nifty fetch failed at exit: {e}")
+        nifty_spot_at_exit = None
+
     # 4. Update Database
     try:
         current_balance = get_db_balance()
         new_balance = round(current_balance + refund_amount, 2)
         supabase.table("kite_config").update({"value": str(new_balance)}).eq("key_name", "paper_balance").execute()
-        supabase.table("paper_trades").update({"status": "CLOSED"}).eq("id", trade_id).execute()
+        
+        supabase.table("paper_trades").update({
+            "status": "CLOSED",
+            "exit_price": float(exit_price),
+            "pnl": float(pnl),
+            "nifty_spot_at_exit": nifty_spot_at_exit
+        }).eq("id", trade_id).execute()
         
         # 5. Clear Memory if it exists
         if symbol in ACTIVE_OPTION_TRADES:

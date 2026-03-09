@@ -343,11 +343,12 @@ def check_active_trade_exits(now_str):
             count = trade['stagnant_count'] or 0
             breakout_price = trade['breakout_price']
 
-            # 🟢 3. STOP LOSS CHECK (Exit if LTP drops to or below Breakout Price)
+            # 🟢 3. STOP LOSS CHECK (Exit exactly at Breakout Price)
             if current_ltp <= breakout_price:
-                logger.info(f"🛑 EXIT: {symbol} hit SL at {current_ltp} (Breakout: {breakout_price})")
+                logger.info(f"🛑 EXIT: {symbol} hit SL at {current_ltp}. Forcing exit at Breakout Price: {breakout_price}")
                 from live_core_functions.live_paper_trader import finalize_trade
-                finalize_trade(symbol, current_ltp, "SL Hit")
+                # Force the paper trade to exit exactly at the entry price to prevent losses
+                finalize_trade(symbol, breakout_price, "SL Hit") 
                 continue
 
             # 4. Check if price is stagnant
