@@ -245,16 +245,17 @@ async def startup_event():
     if token:
         kite.set_access_token(token)
     
-    # 2. Preload NFO instruments in a background thread (Instantly frees up the main thread)
+    # 2. Background Task: Preload NFO data (Fixes the target error)
     threading.Thread(target=preload_nfo_data, daemon=True).start()
     
-    # 3. Start the Options WebSocket "Ears"
-    start_kite_ticker()
+    # 3. Background Task: Start the Options WebSocket "Ears"
+    # 🟢 REMOVED the extra blocking call here
+    threading.Thread(target=start_kite_ticker, daemon=True).start()
     
-    # 🟢 THE CRITICAL FIX: Run the heavy algo logic in a separate background thread.
+    # 4. Background Task: Run the heavy trading algo logic
     threading.Thread(target=run_startup_algo_flow, daemon=True).start()
     
-    logger.info("📡 Background tasks moved to separate threads. Web server is now binding to port 10000.")
+    logger.info("📡 All background tasks spawned. Web server is now binding to port 10000.")
 
 @app.post("/api/place-option-order")
 async def place_option_order(data: dict):
@@ -401,17 +402,15 @@ def get_dashboard(date: str):
             return build_dashboard_data(requested_date)
     except:
         return build_dashboard_data(requested_date)
-    
 
 @app.websocket("/ws/options")
 async def websocket_options_endpoint(websocket: WebSocket):
-    """Endpoint for the React frontend to connect and receive live option prices."""
     await ws_manager.connect(websocket)
     try:
         while True:
-            # Keep connection alive, listen for ping/messages from frontend if any
-            data = await websocket.receive_text()
-    except WebSocketDisconnect:
+            # 🟢 FIX: Set a timeout so the loop doesn't hang forever
+            data = await asyncio.wait_for(websocket.receive_text(), timeout=20.0)
+    except (WebSocketDisconnect, asyncio.TimeoutError):
         ws_manager.disconnect(websocket)
 
 @app.get("/api/get-option-chain-snapshot")
@@ -461,6 +460,7 @@ async def get_live_option_chain():
         # Fetch quotes in one batch call
         nfo_symbols = [f"NFO:{row['tradingsymbol']}" for _, row in df_filtered.iterrows()]
         all_symbols = nfo_symbols + ["NSE:NIFTY 50"]
+        await asyncio.sleep(0.1) 
         quotes = kite.quote(all_symbols)
 
         live_data = [{
