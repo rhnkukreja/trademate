@@ -242,8 +242,7 @@ def on_close(ws, code, reason):
     logger.warning(f"🔴 KiteTicker closed: {code} - {reason}")
 
 def start_kite_ticker():
-    global ticker, token_to_symbol, fastapi_loop
-    fastapi_loop = asyncio.get_event_loop()
+    global ticker, token_to_symbol
 
     # 🟢 FORCE MOCK TO START REGARDLESS OF KITE AUTH
     # threading.Thread(target=start_internal_ui_test, daemon=True).start()            # FOR MOCK DATA TESTING

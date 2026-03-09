@@ -16,6 +16,7 @@ from datetime import date, datetime
 from fastapi import WebSocket, WebSocketDisconnect
 from utils.options_streamer import ws_manager, start_kite_ticker, is_candle_green
 from utils.options_streamer import ACTIVE_OPTION_TRADES
+import utils.options_streamer as os_streamer
 import asyncio
 import threading
 
@@ -236,12 +237,6 @@ def preload_nfo_data():
     except Exception as e:
         logger.error(f"Failed to preload NFO: {e}")
 
-def run_async_ticker():
-    """🟢 FIX: Creates a dedicated event loop for the background ticker thread."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    start_kite_ticker()
-
 @app.on_event("startup")
 async def startup_event():
     logger.info("🚀 Starting FastAPI Server & Syncing Session...")
@@ -251,9 +246,11 @@ async def startup_event():
     if token:
         kite.set_access_token(token)
     
-    # 2. Background Task: Options Ticker (The Friday Logic)
-    # 🟢 We now use the 'run_async_ticker' helper to fix the RuntimeError
-    threading.Thread(target=run_async_ticker, daemon=True).start()
+    # 🟢 FIX: Capture the REAL running event loop for broadcasts
+    os_streamer.fastapi_loop = asyncio.get_running_loop()
+    
+    # 2. Background Task: Options Ticker
+    threading.Thread(target=start_kite_ticker, daemon=True).start()
     
     # 3. Background Task: NFO Preload
     threading.Thread(target=preload_nfo_data, daemon=True).start()
@@ -412,9 +409,8 @@ async def websocket_options_endpoint(websocket: WebSocket):
     await ws_manager.connect(websocket)
     try:
         while True:
-            # 🟢 FIX: Set a timeout so the loop doesn't hang forever
-            data = await asyncio.wait_for(websocket.receive_text(), timeout=20.0)
-    except (WebSocketDisconnect, asyncio.TimeoutError):
+            data = await websocket.receive_text()
+    except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
 
 @app.get("/api/get-option-chain-snapshot")
