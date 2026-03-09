@@ -236,26 +236,30 @@ def preload_nfo_data():
     except Exception as e:
         logger.error(f"Failed to preload NFO: {e}")
 
+def run_async_ticker():
+    """🟢 FIX: Creates a dedicated event loop for the background ticker thread."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    start_kite_ticker()
+
 @app.on_event("startup")
 async def startup_event():
     logger.info("🚀 Starting FastAPI Server & Syncing Session...")
     
-    # 1. Sync Token from Supabase
+    # 1. Sync Token
     token = get_active_token()
     if token:
         kite.set_access_token(token)
     
-    # 2. Background Task: Preload NFO data (Fixes the target error)
+    # 2. Background Task: Options Ticker (The Friday Logic)
+    # 🟢 We now use the 'run_async_ticker' helper to fix the RuntimeError
+    threading.Thread(target=run_async_ticker, daemon=True).start()
+    
+    # 3. Background Task: NFO Preload
     threading.Thread(target=preload_nfo_data, daemon=True).start()
     
-    # 3. Background Task: Start the Options WebSocket "Ears"
-    # 🟢 REMOVED the extra blocking call here
-    threading.Thread(target=start_kite_ticker, daemon=True).start()
-    
-    # 4. Background Task: Run the heavy trading algo logic
+    # 4. Background Task: Breakout Monitoring
     threading.Thread(target=run_startup_algo_flow, daemon=True).start()
-    
-    logger.info("📡 All background tasks spawned. Web server is now binding to port 10000.")
 
 @app.post("/api/place-option-order")
 async def place_option_order(data: dict):
