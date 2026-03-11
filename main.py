@@ -14,9 +14,9 @@ import json
 from utils.common import supabase, logger, get_active_token, kite, get_ist_time
 from datetime import date, datetime
 from fastapi import WebSocket, WebSocketDisconnect
-from utils.options_streamer import ws_manager, start_kite_ticker, is_candle_green, global_strategy_monitor
-from utils.options_streamer import ACTIVE_OPTION_TRADES
-import utils.options_streamer as os_streamer
+from future_options_trading.options_streamer import ws_manager, start_kite_ticker, is_candle_green, global_strategy_monitor
+from future_options_trading.options_streamer import ACTIVE_OPTION_TRADES
+import future_options_trading.options_streamer as os_streamer
 import asyncio
 import threading
 
@@ -263,6 +263,14 @@ async def startup_event():
 
 @app.post("/api/place-option-order")
 async def place_option_order(data: dict):
+    ist_now = get_ist_time()
+    hours = ist_now.hour
+    mins = ist_now.minute
+    is_closed = hours > 15 or (hours == 15 and mins >= 30) or hours < 9 or (hours == 9 and mins < 15)
+    
+    if is_closed:
+        return {"status": "error", "message": "Cannot buy or sell as the market is closed."}
+
     symbol = data.get("symbol")
     price = data.get("price")
     side = data.get("side", "BUY")
@@ -528,7 +536,7 @@ async def exit_option_trade(data: dict):
     side = trade_data["side"]
     
     # 2. Get the current Price (Exit Price)
-    from utils.options_streamer import last_mock_prices
+    from future_options_trading.options_streamer import last_mock_prices
     exit_price = last_mock_prices.get(symbol)
     
     if not exit_price:
@@ -560,7 +568,8 @@ async def exit_option_trade(data: dict):
             "status": "CLOSED",
             "exit_price": float(exit_price),
             "pnl": float(pnl),
-            "nifty_spot_at_exit": nifty_spot_at_exit
+            "nifty_spot_at_exit": nifty_spot_at_exit,
+            "updated_at": datetime.now().isoformat()
         }).eq("id", trade_id).execute()
         
         # 5. Clear Memory if it exists

@@ -213,6 +213,8 @@ def batch_upsert_supabase(table_name, data, batch_size=100):
                     conflict_key = "symbol,breakout_date"
                 elif table_name == "live_ml_features":
                     conflict_key = "symbol,date"
+                elif table_name == "nifty_5min_data":
+                    conflict_key = "instrument,timestamp"
                 else:
                     conflict_key = "symbol,date"
 

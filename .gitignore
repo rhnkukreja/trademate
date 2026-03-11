@@ -34,6 +34,8 @@ logistic_breakout_model_2.pkl
 credentials.json
 derivative_perfomance.py
 test_ws_broadcast.py
+nifty50_past_data_fetch.py
+option_breakout_detector.py
 
 # Ignore excel files
 *.xlsx

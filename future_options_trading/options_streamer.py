@@ -98,17 +98,18 @@ def get_nifty_weekly_options():
 def is_candle_green(interval_minutes):
     try:
         nifty_token = 256265
-        to_dt = datetime.now()
+        # 🟢 FIX 1: Use IST time to prevent cloud server UTC bugs
+        to_dt = get_ist_time()
         from_dt = to_dt - timedelta(days=2)
         
         interval_map = {5: "5minute", 15: "15minute", 60: "60minute"}
         data = kite.historical_data(nifty_token, from_dt, to_dt, interval_map[interval_minutes])
         
-        if not data or len(data) < 2: return False
+        if not data or len(data) < 1: return False
         
-        # Use index -2 to get the last COMPLETED candle
-        completed_candle = data[-2]
-        return completed_candle['close'] > completed_candle['open']
+        # 🟢 FIX 2: Use index -1 to get the LIVE forming candle instead of the closed one
+        live_candle = data[-1]
+        return live_candle['close'] > live_candle['open']
     except Exception as e:
         logger.error(f"Error checking {interval_minutes}min candle: {e}")
         return False
