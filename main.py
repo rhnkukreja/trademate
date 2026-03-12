@@ -138,11 +138,17 @@ def build_dashboard_data(requested_date: str):
             
             for b in breakouts_data:
                 sym_key = f"NSE:{b['symbol']}"
+                
+                # 🟢 FIX: Do NOT override prices if the trade is already closed!
+                if b.get("exit_reason"):
+                    b["current_price"] = b.get("high_price") # This holds the final locked-in exit price
+                    continue # Leave percent_move exactly as saved in DB
+
                 if sym_key in live_quotes:
                     live_ltp = live_quotes[sym_key].get("last_price")
                     b["current_price"] = live_ltp
                     
-                    # 🟢 LIVE RECALCULATION: Override DB % move
+                    # 🟢 LIVE RECALCULATION ONLY FOR OPEN TRADES
                     if b.get("breakout_price") and float(b["breakout_price"]) > 0:
                         b["percent_move"] = round(((live_ltp - float(b["breakout_price"])) / float(b["breakout_price"])) * 100, 2)
                 else:
@@ -524,6 +530,7 @@ async def get_live_option_chain():
 async def exit_option_trade(data: dict):
     symbol = data.get("symbol")
     trade_id = data.get("trade_id")
+    exit_reasoning = data.get("exit_reasoning", "")
     
     # 1. Fetch trade directly from DB (Immune to server restarts)
     db_trade = supabase.table("paper_trades").select("*").eq("id", trade_id).execute()
@@ -531,6 +538,11 @@ async def exit_option_trade(data: dict):
         return {"status": "error", "message": "Trade not found in database."}
         
     trade_data = db_trade.data[0]
+    
+    # 🟢 FIX: Prevent Double-Exit Refund Bug
+    if trade_data.get("status") == "CLOSED":
+        return {"status": "error", "message": "Trade is already closed."}
+        
     entry_price = trade_data["entry_price"]
     quantity = trade_data["quantity"]
     side = trade_data["side"]
@@ -569,7 +581,8 @@ async def exit_option_trade(data: dict):
             "exit_price": float(exit_price),
             "pnl": float(pnl),
             "nifty_spot_at_exit": nifty_spot_at_exit,
-            "updated_at": datetime.now().isoformat()
+            "updated_at": datetime.now().isoformat(),
+            "exit_reasoning": exit_reasoning
         }).eq("id", trade_id).execute()
         
         # 5. Clear Memory if it exists
@@ -580,6 +593,20 @@ async def exit_option_trade(data: dict):
     except Exception as e:
         logger.error(f"❌ Exit Error: {e}")
         return {"status": "error", "message": "Database sync failed."}
+    
+@app.post("/api/update-trade-reasoning")
+async def update_trade_reasoning(data: dict):
+    trade_id = data.get("trade_id")
+    reasoning = data.get("exit_reasoning", "")
+    try:
+        # Update the reasoning on the ALREADY closed trade
+        supabase.table("paper_trades").update({
+            "exit_reasoning": reasoning
+        }).eq("id", trade_id).execute()
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"❌ Update Reasoning Error: {e}")
+        return {"status": "error", "message": "Failed to save reasoning."}
 
 @app.post("/api/check-strategy")
 async def check_strategy(data: dict):

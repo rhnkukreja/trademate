@@ -294,53 +294,48 @@ def start_paper_trade(symbol, breakout_price, breakout_time, model_pred, ai_dec)
 
 def finalize_trade(symbol, exit_price, reason):
     """
-    Finds the active trade in Google Sheets and updates it with exit data.
+    Finds the active trade in Google Sheets and updates it, 
+    but ENSURES Supabase is updated even if Sheets fails.
     """
     try:
-        # 1. Fetch all rows to find the matching symbol with 'OPEN' status
         all_rows = sheet.get_all_values()
         row_num = -1
+        buy_price = exit_price # Fallback to prevent math errors
         
         for i, row in enumerate(all_rows):
             if len(row) >= 11 and row[1] == symbol and row[10].strip() == "OPEN":
-                row_num = i + 1  # gspread uses 1-based indexing
-                buy_price = float(row[6]) # Column index 5 is Buy Price
+                row_num = i + 1  
+                buy_price = float(row[6]) 
                 break
         
-        if row_num != -1:
-            pnl_pct = round(((exit_price - buy_price) / buy_price) * 100, 2)
+        pnl_pct = round(((exit_price - buy_price) / buy_price) * 100, 2) if buy_price > 0 else 0
 
-            # ✅ Make updates thread-safe
+        # 1. Update Sheets if found
+        if row_num != -1:
             with SHEET_LOCK:
                 sheet.update_cell(row_num, 11, "CLOSED")
                 sheet.update_cell(row_num, 12, exit_price)
                 sheet.update_cell(row_num, 13, reason)
                 sheet.update_cell(row_num, 14, f"{pnl_pct}%")
-            
-            # Update Supabase live_breakouts with final EOD move and exit info
-            try:
-                supabase.table("live_breakouts").update({
-                    "percent_move": pnl_pct,
-                    "high_price": float(exit_price),
-                    "exit_reason": reason
-                }).eq("symbol", symbol).eq("breakout_date", datetime.date.today().strftime("%Y-%m-%d")).execute()
-            except Exception as e:
-                print(f"⚠️ Failed to update Supabase with final move for {symbol}: {e}")
-
-            print(f"Successfully finalized {symbol}: {reason} at {exit_price} ({pnl_pct}%)")
-
-            # ✅ COMPLETE cleanup for re-entry
-            ACTIVE_EXIT_MONITORS.discard(symbol)
-            from live_core_functions.minute_monitor_stocks import PAPER_TRADES_TODAY, ARMED_SYMBOLS
-            PAPER_TRADES_TODAY.discard(symbol)
-            ARMED_SYMBOLS.discard(symbol)  # ✅ ADD THIS LINE
-
         else:
-            print(f"Error: Could not find an active 'OPEN' trade for {symbol}.")
-            ACTIVE_EXIT_MONITORS.discard(symbol)
-            from live_core_functions.minute_monitor_stocks import PAPER_TRADES_TODAY, ARMED_SYMBOLS
-            PAPER_TRADES_TODAY.discard(symbol)
-            ARMED_SYMBOLS.discard(symbol)
+            print(f"⚠️ Google Sheet row missing for {symbol}, but proceeding to close in DB.")
+
+        # 2. ALWAYS Update Supabase Database
+        try:
+            supabase.table("live_breakouts").update({
+                "percent_move": pnl_pct,
+                "high_price": float(exit_price),
+                "exit_reason": reason
+            }).eq("symbol", symbol).eq("breakout_date", datetime.date.today().strftime("%Y-%m-%d")).execute()
+            print(f"Successfully finalized {symbol}: {reason} at {exit_price} ({pnl_pct}%)")
+        except Exception as e:
+            print(f"⚠️ Failed to update Supabase with final move for {symbol}: {e}")
+
+        # 3. Memory Cleanup
+        ACTIVE_EXIT_MONITORS.discard(symbol)
+        from live_core_functions.minute_monitor_stocks import PAPER_TRADES_TODAY, ARMED_SYMBOLS
+        PAPER_TRADES_TODAY.discard(symbol)
+        ARMED_SYMBOLS.discard(symbol) 
 
     except Exception as e:
         print(f"CRITICAL ERROR in finalize_trade: {e}")

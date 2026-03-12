@@ -347,9 +347,18 @@ def check_active_trade_exits(now_str):
             if current_ltp <= breakout_price:
                 logger.info(f"🛑 EXIT: {symbol} hit SL at {current_ltp}. Forcing exit at Breakout Price: {breakout_price}")
                 from live_core_functions.live_paper_trader import finalize_trade
-                # Force the paper trade to exit exactly at the entry price to prevent losses
                 finalize_trade(symbol, breakout_price, "SL Hit") 
                 continue
+
+            # 🟢 3.5 TARGET CHECK (3% Profit)
+            target_price = round(breakout_price * 1.03, 2)
+            if current_ltp >= target_price:
+                logger.info(f"🎯 EXIT: {symbol} hit Target at {current_ltp}")
+                from live_core_functions.live_paper_trader import finalize_trade
+                finalize_trade(symbol, target_price, "Target Hit 3%") 
+                continue
+
+            # 4. Check if price is stagnant
 
             # 4. Check if price is stagnant
             if last_ltp is not None and current_ltp == last_ltp:
