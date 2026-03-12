@@ -273,13 +273,7 @@ def start_paper_trade(symbol, breakout_price, breakout_time, model_pred, ai_dec)
     ACTIVE_EXIT_MONITORS.add(symbol)
 
     # Fetch token directly from Kite instruments
-    instruments = kite.instruments("NSE")
-    token = None
-
-    for ins in instruments:
-        if ins["tradingsymbol"] == symbol:
-            token = ins["instrument_token"]
-            break
+    token = token_map.get(symbol)
 
     if not token:
         print(f"❌ Token not found for {symbol}. Cannot start exit monitor.")

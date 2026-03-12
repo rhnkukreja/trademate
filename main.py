@@ -533,7 +533,7 @@ async def exit_option_trade(data: dict):
     exit_reasoning = data.get("exit_reasoning", "")
     
     # 1. Fetch trade directly from DB (Immune to server restarts)
-    db_trade = supabase.table("paper_trades").select("*").eq("id", trade_id).execute()
+    db_trade = supabase.table("paper_trades").select("*").eq("id", int(trade_id)).execute()
     if not db_trade.data:
         return {"status": "error", "message": "Trade not found in database."}
         

@@ -410,7 +410,10 @@ async def global_strategy_monitor():
             payload["history"] = strategy_history_cache["hits"]
             await ws_manager.broadcast(payload)
             
-            # Pause for 1 minute and check again
+            now = get_ist_time()
+            if now.hour > 15 or (now.hour == 15 and now.minute >= 30) or now.hour < 9:
+                await asyncio.sleep(300)
+                continue
             await asyncio.sleep(60)
                 
         except Exception as e:
