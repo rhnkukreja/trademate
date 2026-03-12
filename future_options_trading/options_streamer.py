@@ -139,6 +139,9 @@ def get_5_percent_otm_ce():
     return None
 
 def run_triple_green_strategy():
+    now = get_ist_time()
+    if now.hour > 15 or (now.hour == 15 and now.minute >= 30) or now.hour < 9:
+        return
     logger.info("🔍 Checking Triple Green Strategy...")
     if is_candle_green(5) and is_candle_green(15) and is_candle_green(60):
         logger.info("🚀 TRIPLE GREEN DETECTED!")
@@ -365,8 +368,13 @@ async def global_strategy_monitor():
 
     while True:
         try:
+            now = get_ist_time()
+            if now.hour > 15 or (now.hour == 15 and now.minute >= 30) or now.hour < 9 or (now.hour == 9 and now.minute < 15):
+                await asyncio.sleep(300)
+                continue
+
             # 1. Reset history on a new day
-            today_str = get_ist_time().strftime("%Y-%m-%d")
+            today_str = now.strftime("%Y-%m-%d")
             if strategy_history_cache["date"] != today_str:
                 strategy_history_cache["date"] = today_str
                 strategy_history_cache["hits"] = []
@@ -377,8 +385,8 @@ async def global_strategy_monitor():
             is_1h  = is_candle_green(60)
             
             all_green = is_5m and is_15m and is_1h
-            current_time_str = get_ist_time().strftime("%H:%M:%S")
-            
+            current_time_str = now.strftime("%H:%M:%S")
+
             # 3. Build the live status payload
             payload = {
                 "type": "STRATEGY_STATUS",
@@ -410,10 +418,6 @@ async def global_strategy_monitor():
             payload["history"] = strategy_history_cache["hits"]
             await ws_manager.broadcast(payload)
             
-            now = get_ist_time()
-            if now.hour > 15 or (now.hour == 15 and now.minute >= 30) or now.hour < 9:
-                await asyncio.sleep(300)
-                continue
             await asyncio.sleep(60)
                 
         except Exception as e:
