@@ -64,7 +64,7 @@ def backfill_exit_for_open_trades():
             candles = kite.historical_data(
                 token,
                 from_date=buy_dt,
-                to_date=datetime.date.today(),
+                to_date=datetime.datetime.now(),
                 interval="minute"
             )
         except:
