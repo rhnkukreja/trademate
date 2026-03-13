@@ -558,9 +558,18 @@ async def exit_option_trade(data: dict):
     if not exit_price:
         try:
             q = kite.quote(f"NFO:{symbol}")
-            exit_price = q.get(f"NFO:{symbol}", {}).get("last_price", entry_price)
-        except:
-            exit_price = entry_price
+            # 🟢 FIX 1: Remove the dangerous fallback to entry_price
+            exit_price = q.get(f"NFO:{symbol}", {}).get("last_price")
+        except Exception as e:
+            logger.error(f"Kite API fetch failed on exit: {e}")
+            exit_price = None
+
+    # 🟢 FIX 2: The Critical Safeguard. Abort if price is 0, None, or invalid
+    if not exit_price or exit_price <= 0:
+        return {
+            "status": "error", 
+            "message": f"Failed to fetch valid live price from broker for {symbol}. Trade exit aborted to protect P&L."
+        }
 
     # 3. Calculate PnL & Refund
     pnl = (exit_price - entry_price) * quantity if side == "BUY" else (entry_price - exit_price) * quantity
