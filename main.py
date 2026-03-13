@@ -229,6 +229,8 @@ def run_startup_algo_flow():
         else:
             logger.info(f"🔄 Monitor list incomplete or missing for {today_str}. Building now...")
             create_monitor_list()
+        from live_core_functions.live_paper_trader import backfill_exit_for_open_trades
+        backfill_exit_for_open_trades()
         start_finding_breakouts()
     except Exception as e:
         logger.error(f"❌ Startup algo flow error: {e}")
@@ -530,10 +532,12 @@ async def get_live_option_chain():
 async def exit_option_trade(data: dict):
     symbol = data.get("symbol")
     trade_id = data.get("trade_id")
+    if not trade_id:
+        return {"status": "error", "message": "trade_id is missing"}
     exit_reasoning = data.get("exit_reasoning", "")
     
     # 1. Fetch trade directly from DB (Immune to server restarts)
-    db_trade = supabase.table("paper_trades").select("*").eq("id", int(trade_id)).execute()
+    db_trade = supabase.table("paper_trades").select("*").eq("id", trade_id).execute()
     if not db_trade.data:
         return {"status": "error", "message": "Trade not found in database."}
         
@@ -583,7 +587,7 @@ async def exit_option_trade(data: dict):
             "nifty_spot_at_exit": nifty_spot_at_exit,
             "updated_at": datetime.now().isoformat(),
             "exit_reasoning": exit_reasoning
-        }).eq("id", int(trade_id)).execute()
+        }).eq("id", trade_id).execute()
         
         # 5. Clear Memory if it exists
         if symbol in ACTIVE_OPTION_TRADES:
@@ -602,7 +606,7 @@ async def update_trade_reasoning(data: dict):
         # Update the reasoning on the ALREADY closed trade
         supabase.table("paper_trades").update({
             "exit_reasoning": reasoning
-        }).eq("id", int(trade_id)).execute()
+        }).eq("id", trade_id).execute()
         return {"status": "success"}
     except Exception as e:
         logger.error(f"❌ Update Reasoning Error: {e}")
