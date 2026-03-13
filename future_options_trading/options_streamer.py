@@ -103,13 +103,23 @@ def is_candle_green(interval_minutes):
         from_dt = to_dt - timedelta(days=2)
         
         interval_map = {5: "5minute", 15: "15minute", 60: "60minute"}
-        data = kite.historical_data(nifty_token, from_dt, to_dt, interval_map[interval_minutes])
+        
+        # 1. Force string format so Kite doesn't default to midnight (yesterday)
+        to_str = to_dt.strftime("%Y-%m-%d %H:%M:%S")
+        from_str = from_dt.strftime("%Y-%m-%d %H:%M:%S")
+        
+        data = kite.historical_data(nifty_token, from_str, to_str, interval_map[interval_minutes])
         
         if not data or len(data) < 1: return False
         
-        # 🟢 FIX 2: Use index -1 to get the LIVE forming candle instead of the closed one
         live_candle = data[-1]
-        return live_candle['close'] > live_candle['open']
+        
+        # 2. Kite's historical 'close' is delayed for forming candles. 
+        # We MUST fetch the true live LTP to compare against the interval's open.
+        quote = kite.quote("NSE:NIFTY 50")
+        live_ltp = quote["NSE:NIFTY 50"]["last_price"]
+        
+        return live_ltp > live_candle['open']
     except Exception as e:
         logger.error(f"Error checking {interval_minutes}min candle: {e}")
         return False
