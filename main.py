@@ -583,7 +583,7 @@ async def exit_option_trade(data: dict):
             "nifty_spot_at_exit": nifty_spot_at_exit,
             "updated_at": datetime.now().isoformat(),
             "exit_reasoning": exit_reasoning
-        }).eq("id", trade_id).execute()
+        }).eq("id", int(trade_id)).execute()
         
         # 5. Clear Memory if it exists
         if symbol in ACTIVE_OPTION_TRADES:
@@ -602,7 +602,7 @@ async def update_trade_reasoning(data: dict):
         # Update the reasoning on the ALREADY closed trade
         supabase.table("paper_trades").update({
             "exit_reasoning": reasoning
-        }).eq("id", trade_id).execute()
+        }).eq("id", int(trade_id)).execute()
         return {"status": "success"}
     except Exception as e:
         logger.error(f"❌ Update Reasoning Error: {e}")
