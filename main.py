@@ -141,8 +141,16 @@ def build_dashboard_data(requested_date: str):
                 
                 # 🟢 FIX: Do NOT override prices if the trade is already closed!
                 if b.get("exit_reason"):
-                    b["current_price"] = b.get("high_price") # This holds the final locked-in exit price
-                    continue # Leave percent_move exactly as saved in DB
+                    exit_price = float(b.get("high_price") or 0)
+                    breakout_price = float(b.get("breakout_price") or 0)
+                    
+                    b["current_price"] = exit_price 
+                    
+                    # 🟢 Dynamically recalculate the final percent_move to guarantee accuracy
+                    if breakout_price > 0:
+                        b["percent_move"] = round(((exit_price - breakout_price) / breakout_price) * 100, 2)
+                        
+                    continue
 
                 if sym_key in live_quotes:
                     live_ltp = live_quotes[sym_key].get("last_price")
