@@ -256,23 +256,32 @@ def on_close(ws, code, reason):
     logger.warning(f"🔴 KiteTicker closed: {code} - {reason}")
 
 def start_kite_ticker():
-    global ticker, token_to_symbol
-
-    # 🟢 FORCE MOCK TO START REGARDLESS OF KITE AUTH
-    # threading.Thread(target=start_internal_ui_test, daemon=True).start()            # FOR MOCK DATA TESTING
-    auth_token = get_active_token()
-    if not auth_token: return
-
-    token_to_symbol, tokens_to_sub = get_nifty_weekly_options()
-    if not tokens_to_sub: return
-
-    api_key = os.getenv("KITE_API_KEY")
-    ticker = KiteTicker(api_key, auth_token)
-    ticker.on_connect = on_connect
-    ticker.on_ticks = on_ticks
-    ticker.on_close = on_close
-    t = threading.Thread(target=ticker.connect, kwargs={"threaded": True})
-    t.daemon = True
+    def run_loop():
+        global ticker, token_to_symbol
+        while True:
+            try:
+                logger.info("🔄 Fetching fresh token from Supabase...")
+                auth_token = get_active_token()
+                if not auth_token:
+                    time.sleep(10)
+                    continue
+                
+                token_to_symbol, tokens_to_sub = get_nifty_weekly_options()
+                api_key = os.getenv("KITE_API_KEY")
+                
+                ticker = KiteTicker(api_key, auth_token)
+                ticker.on_connect = on_connect
+                ticker.on_ticks = on_ticks
+                ticker.on_close = lambda ws, code, reason: ws.stop() # Break connect loop on close
+                ticker.on_error = lambda ws, code, reason: ws.stop() # Break connect loop on error
+                
+                logger.info("🔌 Connecting Kite Ticker...")
+                ticker.connect(threaded=False) # This blocks until connection is lost
+            except Exception as e:
+                logger.error(f"❌ Ticker Loop Error: {e}")
+                time.sleep(10)
+    
+    t = threading.Thread(target=run_loop, daemon=True)
     t.start()
 
     # threading.Thread(target=start_internal_ui_test, daemon=True).start()
