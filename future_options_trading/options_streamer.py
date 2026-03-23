@@ -266,10 +266,13 @@ def start_kite_ticker():
                     time.sleep(10)
                     continue
                 
-                token_to_symbol, tokens_to_sub = get_nifty_weekly_options()
-                api_key = os.getenv("KITE_API_KEY")
+                # Apply the token to the global REST client before calling functions that use it
+                kite.set_access_token(auth_token)
                 
-                ticker = KiteTicker(api_key, auth_token)
+                token_to_symbol, tokens_to_sub = get_nifty_weekly_options()
+                from utils.common import KITE_API_KEY
+                
+                ticker = KiteTicker(KITE_API_KEY, auth_token)
                 ticker.on_connect = on_connect
                 ticker.on_ticks = on_ticks
                 ticker.on_close = lambda ws, code, reason: ws.stop() # Break connect loop on close
