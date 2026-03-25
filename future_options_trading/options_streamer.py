@@ -282,7 +282,8 @@ def start_kite_ticker():
                 logger.info("🔌 Connecting Kite Ticker...")
                 ticker.connect(threaded=False) # This blocks until connection is lost
             except Exception as e:
-                logger.error(f"❌ Ticker Loop Error: {e}")
+                # 🟢 FIX: Force print the type of error to see why it's silent
+                logger.error(f"❌ Ticker Loop Error ({type(e).__name__}): {repr(e)}")
                 time.sleep(10)
     
     t = threading.Thread(target=run_loop, daemon=True)
