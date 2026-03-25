@@ -279,13 +279,9 @@ async def startup_event():
         asyncio.run(global_strategy_monitor())
     threading.Thread(target=run_monitor_sync, daemon=True).start()
 
-
 @app.post("/api/get-order-margin")
 async def get_order_margin(data: dict):
-    symbol = data.get("symbol")
-    qty = data.get("qty")
-    side = data.get("side")
-    price = data.get("price")
+    symbol, qty, side, price = data.get("symbol"), data.get("qty"), data.get("side"), data.get("price")
     try:
         if side == "SELL":
             margin_res = kite.order_margins([{
@@ -293,9 +289,20 @@ async def get_order_margin(data: dict):
                 "variety": "regular", "product": "NRML", "order_type": "MARKET", "quantity": qty
             }])
             return {"margin": margin_res[0]["total"]}
-        return {"margin": price * qty}
+        return {"margin": (price or 0) * (qty or 0)}
+    except: return {"margin": (price or 0) * (qty or 0)}
+
+@app.get("/api/get-lot-size")
+async def get_lot_size(symbol: str):
+    try:
+        today = date.today()
+        if _nfo_cache["data"] is None or _nfo_cache["date"] != today:
+            _nfo_cache["data"] = kite.instruments("NFO")
+            _nfo_cache["date"] = today
+        instrument_info = next((i for i in _nfo_cache["data"] if i['tradingsymbol'] == symbol), None)
+        return {"lot_size": instrument_info['lot_size'] if instrument_info else 75}
     except:
-        return {"margin": price * qty}
+        return {"lot_size": 75}
 
 @app.post("/api/place-option-order")
 async def place_option_order(data: dict):
@@ -567,7 +574,8 @@ async def get_live_option_chain():
                 "type": row["instrument_type"],
                 "ltp": effective_ltp,
                 "open": open_price,
-                "change_percent": round(((effective_ltp - open_price) / open_price * 100), 2) if open_price > 0 else 0
+                "change_percent": round(((effective_ltp - open_price) / open_price * 100), 2) if open_price > 0 else 0,
+                "lot_size": int(row["lot_size"])
             })
 
         logger.info(f"✅ Option chain: {len(live_data)} entries, expiry={current_expiry}, spot={spot_price}")
