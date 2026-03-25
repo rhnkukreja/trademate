@@ -275,8 +275,9 @@ def start_kite_ticker():
                 ticker = KiteTicker(KITE_API_KEY, auth_token)
                 ticker.on_connect = on_connect
                 ticker.on_ticks = on_ticks
-                ticker.on_close = lambda ws, code, reason: ws.stop() # Break connect loop on close
-                ticker.on_error = lambda ws, code, reason: ws.stop() # Break connect loop on error
+                # Log the actual reason so the "Ticker Loop Error" is not empty
+                ticker.on_close = lambda ws, code, reason: (logger.warning(f"Ticker Closed: {reason}"), ws.stop())
+                ticker.on_error = lambda ws, code, reason: (logger.error(f"Ticker Error: {reason}"), ws.stop())
                 
                 logger.info("🔌 Connecting Kite Ticker...")
                 ticker.connect(threaded=False) # This blocks until connection is lost
