@@ -279,6 +279,24 @@ async def startup_event():
         asyncio.run(global_strategy_monitor())
     threading.Thread(target=run_monitor_sync, daemon=True).start()
 
+
+@app.post("/api/get-order-margin")
+async def get_order_margin(data: dict):
+    symbol = data.get("symbol")
+    qty = data.get("qty")
+    side = data.get("side")
+    price = data.get("price")
+    try:
+        if side == "SELL":
+            margin_res = kite.order_margins([{
+                "exchange": "NFO", "tradingsymbol": symbol, "transaction_type": "SELL",
+                "variety": "regular", "product": "NRML", "order_type": "MARKET", "quantity": qty
+            }])
+            return {"margin": margin_res[0]["total"]}
+        return {"margin": price * qty}
+    except:
+        return {"margin": price * qty}
+
 @app.post("/api/place-option-order")
 async def place_option_order(data: dict):
     ist_now = get_ist_time()
@@ -325,9 +343,23 @@ async def place_option_order(data: dict):
         nifty_spot_at_order = None
         qty = int(user_qty) if (user_qty and int(user_qty) > 0) else 50
 
-    # 🟢 VERIFY FUNDS
+    # 🟢 VERIFY FUNDS using real Kite Margin API
     current_balance = get_db_balance()
-    margin_required = price * qty
+    try:
+        if side == "SELL":
+            # Fetch real exchange margin for Sell orders
+            margin_res = kite.order_margins([{
+                "exchange": "NFO", "tradingsymbol": symbol, "transaction_type": "SELL",
+                "variety": "regular", "product": "NRML", "order_type": "MARKET", "quantity": qty
+            }])
+            margin_required = margin_res[0]["total"]
+        else:
+            # Buying only requires the premium
+            margin_required = price * qty
+    except Exception as e:
+        logger.warning(f"Margin API failed, falling back to premium: {e}")
+        margin_required = price * qty
+
     if margin_required > current_balance:
         return {"status": "error", "message": "Insufficient funds."}
     
