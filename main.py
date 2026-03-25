@@ -290,7 +290,15 @@ async def place_option_order(data: dict):
         return {"status": "error", "message": "Cannot buy or sell as the market is closed."}
 
     symbol = data.get("symbol")
-    price = data.get("price")
+    # 🟢 LIVE PRICE FIX: Ignore frontend price, fetch fresh LTP from Kite
+    try:
+        quote = kite.quote(f"NFO:{symbol}")
+        price = quote[f"NFO:{symbol}"]["last_price"]
+        if not price or price <= 0:
+            raise ValueError("Invalid price from broker")
+    except Exception as e:
+        logger.error(f"Failed to fetch live price for order {symbol}: {e}")
+        return {"status": "error", "message": "Could not verify live price. Try again."}
     side = data.get("side", "BUY")
     user_qty = data.get("QTY") or data.get("qty") or data.get("quantity")
 

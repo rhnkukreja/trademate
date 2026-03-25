@@ -260,6 +260,15 @@ def start_kite_ticker():
         global ticker, token_to_symbol
         while True:
             try:
+                # 🟢 ZOMBIE KILLER: Force stop the previous ticker before starting a new one
+                global ticker
+                if ticker is not None:
+                    logger.info("🛑 Stopping existing ticker instance...")
+                    try:
+                        ticker.stop()
+                    except: pass
+                    ticker = None
+
                 logger.info("🔄 Fetching fresh token from Supabase...")
                 auth_token = get_active_token()
                 if not auth_token:
@@ -268,6 +277,7 @@ def start_kite_ticker():
                 
                 # Apply the token to the global REST client before calling functions that use it
                 kite.set_access_token(auth_token)
+                logger.info(f"✅ Session Synced. Token starts with: {auth_token[:5]}...")
                 
                 token_to_symbol, tokens_to_sub = get_nifty_weekly_options()
                 from utils.common import KITE_API_KEY
@@ -280,11 +290,15 @@ def start_kite_ticker():
                 ticker.on_error = lambda ws, code, reason: (logger.error(f"Ticker Error: {reason}"), ticker.stop())
                 
                 logger.info("🔌 Connecting Kite Ticker...")
-                ticker.connect(threaded=True) # This blocks until connection is lost
-
-                # Wait loop: Keep this loop alive while the ticker is active.
-                # If the ticker disconnects, it will break this and fetch a fresh token.
-                while ticker.is_connected():
+                ticker.connect(threaded=True)
+                
+                time.sleep(5)
+                
+                # Monitor loop: Detect if it drops so we can fetch a fresh token
+                while True:
+                    if not ticker.is_connected():
+                        logger.warning("⚠️ Ticker disconnected. Restarting loop...")
+                        break
                     time.sleep(5)
             except Exception as e:
                 # 🟢 FIX: Force print the type of error to see why it's silent
