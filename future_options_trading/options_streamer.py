@@ -276,11 +276,16 @@ def start_kite_ticker():
                 ticker.on_connect = on_connect
                 ticker.on_ticks = on_ticks
                 # Log the actual reason so the "Ticker Loop Error" is not empty
-                ticker.on_close = lambda ws, code, reason: (logger.warning(f"Ticker Closed: {reason}"), ws.stop())
-                ticker.on_error = lambda ws, code, reason: (logger.error(f"Ticker Error: {reason}"), ws.stop())
+                ticker.on_close = lambda ws, code, reason: (logger.warning(f"Ticker Closed: {reason}"), ticker.stop())
+                ticker.on_error = lambda ws, code, reason: (logger.error(f"Ticker Error: {reason}"), ticker.stop())
                 
                 logger.info("🔌 Connecting Kite Ticker...")
-                ticker.connect(threaded=False) # This blocks until connection is lost
+                ticker.connect(threaded=True) # This blocks until connection is lost
+
+                # Wait loop: Keep this loop alive while the ticker is active.
+                # If the ticker disconnects, it will break this and fetch a fresh token.
+                while ticker.is_connected():
+                    time.sleep(5)
             except Exception as e:
                 # 🟢 FIX: Force print the type of error to see why it's silent
                 logger.error(f"❌ Ticker Loop Error ({type(e).__name__}): {repr(e)}")

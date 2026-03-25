@@ -266,7 +266,7 @@ async def startup_event():
     os_streamer.fastapi_loop = asyncio.get_running_loop()
     
     # 3. Background Task: Options Ticker
-    threading.Thread(target=start_kite_ticker, daemon=True).start()
+    start_kite_ticker()
     
     # 4. Background Task: NFO Preload
     threading.Thread(target=preload_nfo_data, daemon=True).start()
@@ -274,8 +274,10 @@ async def startup_event():
     # 5. Background Task: Breakout Monitoring
     threading.Thread(target=run_startup_algo_flow, daemon=True).start()
     
-    # 6. Background Task: Global Strategy Alerts (Async Task)
-    asyncio.create_task(global_strategy_monitor())
+    # 6. Background Task: Global Strategy Alerts (Run in a separate thread to keep event loop fast)
+    def run_monitor_sync():
+        asyncio.run(global_strategy_monitor())
+    threading.Thread(target=run_monitor_sync, daemon=True).start()
 
 @app.post("/api/place-option-order")
 async def place_option_order(data: dict):
@@ -466,6 +468,10 @@ async def get_live_option_chain():
         return _option_chain_cache["data"]
 
     try:
+        # 🟢 REDEPLOY FIX: Ensure REST client is using the latest token from Supabase
+        current_token = get_active_token()
+        if current_token:
+            kite.set_access_token(current_token)
         # Use daily cache — instruments only change on expiry day
         today = date.today()
         if _nfo_cache["data"] is None or _nfo_cache["date"] != today:
