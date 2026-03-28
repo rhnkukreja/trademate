@@ -54,7 +54,7 @@ app.add_middleware(
         "http://localhost:8080", 
         "http://127.0.0.1:8080",
         "https://trademate-b4d7.onrender.com",
-        "https://melodious-wisp-e4651e.netlify.app/portfolio"
+        "https://melodious-wisp-e4651e.netlify.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],
