@@ -50,7 +50,12 @@ app = FastAPI(title="Trademate")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:8080", 
+        "http://127.0.0.1:8080",
+        "https://trademate-b4d7.onrender.com",
+        "https://melodious-wisp-e4651e.netlify.app/portfolio"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -226,6 +231,11 @@ async def get_paper_balance():
 def run_startup_algo_flow():
     """Runs the monitor list build and monitoring loop on server startup."""
     try:
+        # 🟢 NEW: Check if today is Saturday (5) or Sunday (6)
+        if date.today().weekday() >= 5:
+            logger.info("⏸️ Weekend detected. Skipping monitor list build and live monitoring.")
+            return
+
         today_str = date.today().strftime("%Y-%m-%d")
         completion_flag = supabase.table("kite_config") \
             .select("value") \
@@ -279,6 +289,20 @@ async def startup_event():
         asyncio.run(global_strategy_monitor())
     threading.Thread(target=run_monitor_sync, daemon=True).start()
 
+    # 7. Restore Active Trades to Memory for SL/TP Execution
+    active_trades = supabase.table("paper_trades").select("*").eq("status", "OPEN").execute()
+    if active_trades.data:
+        for t in active_trades.data:
+            ACTIVE_OPTION_TRADES[t["symbol"]] = {
+                "trade_id": t["id"],
+                "entry": t["entry_price"],
+                "qty": t["quantity"],
+                "type": t["side"],
+                "sl": t["sl_price"],
+                "target": t["target_price"]
+            }
+        logger.info(f"Loaded {len(active_trades.data)} active option trades into memory.")
+
 @app.post("/api/get-order-margin")
 async def get_order_margin(data: dict):
     symbol, qty, side, price = data.get("symbol"), data.get("qty"), data.get("side"), data.get("price")
@@ -300,7 +324,7 @@ async def get_lot_size(symbol: str):
             _nfo_cache["data"] = kite.instruments("NFO")
             _nfo_cache["date"] = today
         instrument_info = next((i for i in _nfo_cache["data"] if i['tradingsymbol'] == symbol), None)
-        return {"lot_size": instrument_info['lot_size'] if instrument_info else 75}
+        return {"lot_size": instrument_info['lot_size'] if instrument_info else 65}
     except:
         return {"lot_size": 75}
 
@@ -343,12 +367,12 @@ async def place_option_order(data: dict):
         else:
             instruments = kite.instruments("NFO")
             instrument_info = next((i for i in instruments if i['tradingsymbol'] == symbol), None)
-            qty = instrument_info['lot_size'] if instrument_info else 50
+            qty = instrument_info['lot_size'] if instrument_info else 65
             
     except Exception as e:
         logger.warning(f"⚠️ Kite fetch failed, using fallbacks: {e}")
         nifty_spot_at_order = None
-        qty = int(user_qty) if (user_qty and int(user_qty) > 0) else 50
+        qty = int(user_qty) if (user_qty and int(user_qty) > 0) else 65
 
     # 🟢 VERIFY FUNDS using real Kite Margin API
     current_balance = get_db_balance()
@@ -370,13 +394,11 @@ async def place_option_order(data: dict):
     if margin_required > current_balance:
         return {"status": "error", "message": "Insufficient funds."}
     
-    # 🟢 CALCULATE RISK/REWARD
-    sl = round(price * 0.99, 2) if side == "BUY" else round(price * 1.01, 2)
-    target = round(price * 1.02, 2) if side == "BUY" else round(price * 0.98, 2)
+    # 🟢 DEFAULT TO MANUAL EXIT (No SL/TP)
+    sl = None
+    target = None
 
-    # 🟢 SAVE TO MEMORY & DB
-    ACTIVE_OPTION_TRADES[symbol] = {"entry": price, "qty": qty, "type": side, "sl": sl, "target": target}
-    
+    # 🟢 SAVE TO DB FIRST TO GET THE TRADE ID
     trade_record = {
         "symbol": symbol, "entry_price": price, "quantity": qty,
         "side": side, "status": "OPEN", "sl_price": sl, "target_price": target,
@@ -384,13 +406,56 @@ async def place_option_order(data: dict):
         "created_at": datetime.now().isoformat()
     }
     
-    supabase.table("paper_trades").insert(trade_record).execute()
+    res = supabase.table("paper_trades").insert(trade_record).execute()
+    trade_id = res.data[0]["id"] if res.data else None
+
+    # 🟢 SAVE TO MEMORY WITH TRADE ID
+    if trade_id:
+        ACTIVE_OPTION_TRADES[symbol] = {
+            "trade_id": trade_id, "entry": price, "qty": qty, 
+            "type": side, "sl": sl, "target": target
+        }
     
     # Update Balance
     new_balance = round(current_balance - margin_required, 2)
     supabase.table("kite_config").update({"value": str(new_balance)}).eq("key_name", "paper_balance").execute()
     
     return {"status": "success", "verified_quantity": qty, "new_balance": new_balance}
+
+@app.post("/api/update-option-sl-tp")
+async def update_option_sl_tp(data: dict):
+    trade_id = data.get("trade_id")
+    symbol = data.get("symbol")
+    sl_pct = data.get("sl_pct") # e.g., 2 for 2%
+    tp_pct = data.get("tp_pct") # e.g., 5 for 5%
+
+    db_trade = supabase.table("paper_trades").select("*").eq("id", trade_id).execute()
+    if not db_trade.data:
+        return {"status": "error", "message": "Trade not found"}
+    
+    trade = db_trade.data[0]
+    entry_price = float(trade["entry_price"])
+    side = trade["side"]
+
+    sl_price = None
+    tp_price = None
+
+    # Calculate exact trigger prices based on %
+    if sl_pct is not None and float(sl_pct) > 0:
+        sl_price = round(entry_price * (1 - float(sl_pct)/100), 2) if side == "BUY" else round(entry_price * (1 + float(sl_pct)/100), 2)
+    
+    if tp_pct is not None and float(tp_pct) > 0:
+        tp_price = round(entry_price * (1 + float(tp_pct)/100), 2) if side == "BUY" else round(entry_price * (1 - float(tp_pct)/100), 2)
+
+    # Update Database
+    supabase.table("paper_trades").update({"sl_price": sl_price, "target_price": tp_price}).eq("id", trade_id).execute()
+
+    # Update Live Memory Engine
+    if symbol in ACTIVE_OPTION_TRADES:
+        ACTIVE_OPTION_TRADES[symbol]["sl"] = sl_price
+        ACTIVE_OPTION_TRADES[symbol]["target"] = tp_price
+
+    return {"status": "success", "sl_price": sl_price, "target_price": tp_price}
 
 @app.get("/api/get-active-trades")
 async def get_active_trades():
@@ -682,6 +747,20 @@ async def update_trade_reasoning(data: dict):
     except Exception as e:
         logger.error(f"❌ Update Reasoning Error: {e}")
         return {"status": "error", "message": "Failed to save reasoning."}
+
+@app.post("/api/update-trade-journal")
+async def update_trade_journal(data: dict):
+    trade_id = data.get("trade_id")
+    journal_data = data.get("journal", {})
+    try:
+        # Save the dictionary of answers into the new jsonb column
+        supabase.table("paper_trades").update({
+            "journal": journal_data
+        }).eq("id", trade_id).execute()
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"❌ Update Journal Error: {e}")
+        return {"status": "error", "message": "Failed to save journal."}
 
 @app.post("/api/check-strategy")
 async def check_strategy(data: dict):

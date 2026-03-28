@@ -9,7 +9,7 @@ from kiteconnect import KiteTicker
 from utils.common import kite, logger, get_active_token, supabase, get_ist_time
 import math
 import random
-
+import requests
 
 ACTIVE_OPTION_TRADES = {}
 last_mock_prices = {}
@@ -217,27 +217,45 @@ def on_ticks(ws, ticks):
             "oi": tick.get('oi', 0)
         })
 
-    # for sym, trade_data in list(ACTIVE_OPTION_TRADES.items()):
-    #     # Find the current LTP for this specific traded symbol
-    #     tick_info = next((t for t in formatted_ticks if t['symbol'] == sym), None)
-    #     if not tick_info: continue
+    for sym, trade_data in list(ACTIVE_OPTION_TRADES.items()):
+        # Find the current LTP for this specific traded symbol
+        tick_info = next((t for t in formatted_ticks if t['symbol'] == sym), None)
+        if not tick_info: continue
         
-    #     ltp = tick_info['ltp']
-    #     side = trade_data['type']
-    #     sl = trade_data['sl']
-    #     target = trade_data['target']
+        ltp = tick_info['ltp']
+        side = trade_data['type']
+        sl = trade_data.get('sl')
+        target = trade_data.get('target')
+        trade_id = trade_data.get('trade_id')
 
-    #     # Check conditions
-    #     hit_sl = (side == "BUY" and ltp <= sl) or (side == "SELL" and ltp >= sl)
-    #     hit_target = (side == "BUY" and ltp >= target) or (side == "SELL" and ltp <= target)
+        hit_sl = False
+        hit_target = False
 
-    #     if hit_sl or hit_target:
-    #         logger.info(f"🚨 AUTO-EXIT: {sym} hit {'SL' if hit_sl else 'Target'} at {ltp}")
-    #         # This calls the exit function to remove it from memory
-    #         exit_option_trade(sym, ltp, "AUTO_EXIT_TRIGGERED")
+        # Only check SL/TP if the user has actually set them
+        if sl is not None:
+            hit_sl = (side == "BUY" and ltp <= sl) or (side == "SELL" and ltp >= sl)
+        if target is not None:
+            hit_target = (side == "BUY" and ltp >= target) or (side == "SELL" and ltp <= target)
+
+        if hit_sl or hit_target:
+            reason = f"AUTO_EXIT: {'SL' if hit_sl else 'Target'} Hit"
+            logger.info(f"🚨 {reason} for {sym} at {ltp}")
             
-    #         # 🔄 Also update Supabase so the UI knows it is closed
-    #         supabase.table("paper_trades").update({"status": "CLOSED"}).eq("symbol", sym).eq("status", "OPEN").execute()
+            # Immediately remove from memory to prevent duplicate triggers
+            exit_option_trade(sym, ltp, reason)
+            
+            # Fire an internal POST to your official exit endpoint to refund balance accurately
+            def trigger_exit(s, tid, r):
+                try:
+                    requests.post("http://127.0.0.1:8000/api/exit-option-trade", json={
+                        "symbol": s,
+                        "trade_id": tid,
+                        "exit_reasoning": r
+                    }, timeout=5)
+                except Exception as e:
+                    logger.error(f"Failed to internally trigger auto-exit for {s}: {e}")
+            
+            threading.Thread(target=trigger_exit, args=(sym, trade_id, reason), daemon=True).start()
 
     asyncio.run_coroutine_threadsafe(ws_manager.broadcast({"type": "live_options", "data": formatted_ticks}), fastapi_loop)
 
