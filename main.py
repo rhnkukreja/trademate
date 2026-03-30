@@ -17,6 +17,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from future_options_trading.options_streamer import ws_manager, start_kite_ticker, is_candle_green, global_strategy_monitor
 from future_options_trading.options_streamer import ACTIVE_OPTION_TRADES
 import future_options_trading.options_streamer as os_streamer
+from live_core_functions.live_paper_trader import backfill_exit_for_open_trades
 import asyncio
 import threading
 
@@ -77,6 +78,14 @@ def get_db_count(date_str: str, tier=None):
     except Exception as e:
         logger.error(f"[get_count] Error: {e}")
         return 0
+
+def run_monitor_sync_wrapper():
+    """Global wrapper for strategy monitor thread."""
+    asyncio.run(global_strategy_monitor())
+
+def run_auto_exit_wrapper():
+    """Global wrapper for market close thread."""
+    asyncio.run(market_close_auto_exit())
 
 def build_dashboard_data(requested_date: str):
     """Builds comprehensive dashboard data for a given date (optimized for breakout page)."""
@@ -247,7 +256,7 @@ def run_startup_algo_flow():
         else:
             logger.info(f"🔄 Monitor list incomplete or missing for {today_str}. Building now...")
             create_monitor_list()
-        from live_core_functions.live_paper_trader import backfill_exit_for_open_trades
+
         backfill_exit_for_open_trades()
         start_finding_breakouts()
     except Exception as e:
@@ -262,6 +271,26 @@ def preload_nfo_data():
         logger.info("✅ NFO instruments preloaded! UI will now load instantly.")
     except Exception as e:
         logger.error(f"Failed to preload NFO: {e}")
+
+async def market_close_auto_exit():
+    """Monitors IST time and force-closes all open trades at 3:20 PM IST."""
+    logger.info("🕒 Market Close Auto-Exit monitor started.")
+    while True:
+        now = get_ist_time()
+        # 3:20 PM IST is the standard intraday square-off time
+        if now.hour == 15 and now.minute >= 20 and now.weekday() < 5:
+            active_trades = supabase.table("paper_trades").select("*").eq("status", "OPEN").execute()
+            if active_trades.data:
+                logger.info(f"🚨 3:20 PM Detected! Squaring off {len(active_trades.data)} positions...")
+                for trade in active_trades.data:
+                    await exit_option_trade({
+                        "symbol": trade["symbol"],
+                        "trade_id": trade["id"],
+                        "exit_reasoning": "Auto-Squareoff at Market Close (3:20 PM IST)"
+                    })
+            # Sleep for 1 hour to avoid double-triggering
+            await asyncio.sleep(3600)
+        await asyncio.sleep(60) # Check every minute
 
 @app.on_event("startup")
 async def startup_event():
@@ -284,10 +313,8 @@ async def startup_event():
     # 5. Background Task: Breakout Monitoring
     threading.Thread(target=run_startup_algo_flow, daemon=True).start()
     
-    # 6. Background Task: Global Strategy Alerts (Run in a separate thread to keep event loop fast)
-    def run_monitor_sync():
-        asyncio.run(global_strategy_monitor())
-    threading.Thread(target=run_monitor_sync, daemon=True).start()
+    # 6. Background Task: Global Strategy Alerts
+    threading.Thread(target=run_monitor_sync_wrapper, daemon=True).start()
 
     # 7. Restore Active Trades to Memory for SL/TP Execution
     active_trades = supabase.table("paper_trades").select("*").eq("status", "OPEN").execute()
@@ -302,6 +329,9 @@ async def startup_event():
                 "target": t["target_price"]
             }
         logger.info(f"Loaded {len(active_trades.data)} active option trades into memory.")
+
+    # 8. Background Task: Auto-Exit at 3:20 PM IST
+    threading.Thread(target=run_auto_exit_wrapper, daemon=True).start()
 
 @app.post("/api/get-order-margin")
 async def get_order_margin(data: dict):
@@ -394,20 +424,17 @@ async def place_option_order(data: dict):
     if margin_required > current_balance:
         return {"status": "error", "message": "Insufficient funds."}
     
-    # 🟢 Calculate SL/TP based on Side (BUY/SELL)
-    # Checks if user set specific % in UI, otherwise uses safe defaults
-    user_sl_pct = data.get("sl_pct")
-    user_tp_pct = data.get("tp_pct")
+    # 🟢 Set SL/TP ONLY if provided by the user in the UI, otherwise default to None
+    u_sl = data.get("sl_pct")
+    u_tp = data.get("tp_pct")
+    sl = None
+    target = None
 
-    if side == "BUY":
-        # Long: SL is lower, Target is higher
-        sl = round(price * (1 - float(user_sl_pct)/100), 2) if user_sl_pct else round(price * 0.90, 2)
-        target = round(price * (1 + float(user_tp_pct)/100), 2) if user_tp_pct else round(price * 1.20, 2)
-    else:
-        # Short (SELL): SL is HIGHER, Target is LOWER
-        # Works for both CE and PE shorting
-        sl = round(price * (1 + float(user_sl_pct)/100), 2) if user_sl_pct else round(price * 1.20, 2)
-        target = round(price * (1 - float(user_tp_pct)/100), 2) if user_tp_pct else round(price * 0.50, 2)
+    if u_sl and float(u_sl) > 0:
+        sl = round(price * (1 - float(u_sl)/100), 2) if side == "BUY" else round(price * (1 + float(u_sl)/100), 2)
+    
+    if u_tp and float(u_tp) > 0:
+        target = round(price * (1 + float(u_tp)/100), 2) if side == "BUY" else round(price * (1 - float(u_tp)/100), 2)
 
     # 🟢 SAVE TO DB FIRST TO GET THE TRADE ID
     trade_record = {
@@ -596,11 +623,11 @@ async def get_live_option_chain():
         if current_token:
             kite.set_access_token(current_token)
         # Use daily cache — instruments only change on expiry day
-        today = date.today()
-        if _nfo_cache["data"] is None or _nfo_cache["date"] != today:
+        today_ist = get_ist_time().date()
+        if _nfo_cache["data"] is None or _nfo_cache["date"] != today_ist:
             logger.info("🔄 Refreshing NFO instruments cache...")
             _nfo_cache["data"] = kite.instruments("NFO")
-            _nfo_cache["date"] = today
+            _nfo_cache["date"] = today_ist
         df = pd.DataFrame(_nfo_cache["data"])
 
         # Filter NIFTY options only
@@ -608,7 +635,7 @@ async def get_live_option_chain():
         df_nifty["expiry"] = pd.to_datetime(df_nifty["expiry"]).dt.date
 
         # Get nearest future expiry
-        future_expiries = sorted([e for e in df_nifty["expiry"].unique() if e >= date.today()])
+        future_expiries = sorted([e for e in df_nifty["expiry"].unique() if e >= get_ist_time().date()])
         if not future_expiries:
             logger.warning("No future expiries found")
             return []
