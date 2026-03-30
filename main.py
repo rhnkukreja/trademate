@@ -324,7 +324,7 @@ async def get_lot_size(symbol: str):
             _nfo_cache["data"] = kite.instruments("NFO")
             _nfo_cache["date"] = today
         instrument_info = next((i for i in _nfo_cache["data"] if i['tradingsymbol'] == symbol), None)
-        return {"lot_size": instrument_info['lot_size'] if instrument_info else 65}
+        return {"lot_size": instrument_info['lot_size'] if instrument_info else 75}
     except:
         return {"lot_size": 75}
 
@@ -367,12 +367,12 @@ async def place_option_order(data: dict):
         else:
             instruments = kite.instruments("NFO")
             instrument_info = next((i for i in instruments if i['tradingsymbol'] == symbol), None)
-            qty = instrument_info['lot_size'] if instrument_info else 65
+            qty = int(user_qty) if (user_qty and int(user_qty) > 0) else 75
             
     except Exception as e:
         logger.warning(f"⚠️ Kite fetch failed, using fallbacks: {e}")
         nifty_spot_at_order = None
-        qty = int(user_qty) if (user_qty and int(user_qty) > 0) else 65
+        qty = int(user_qty) if (user_qty and int(user_qty) > 0) else 75
 
     # 🟢 VERIFY FUNDS using real Kite Margin API
     current_balance = get_db_balance()
@@ -394,9 +394,20 @@ async def place_option_order(data: dict):
     if margin_required > current_balance:
         return {"status": "error", "message": "Insufficient funds."}
     
-    # 🟢 DEFAULT TO MANUAL EXIT (No SL/TP)
-    sl = None
-    target = None
+    # 🟢 Calculate SL/TP based on Side (BUY/SELL)
+    # Checks if user set specific % in UI, otherwise uses safe defaults
+    user_sl_pct = data.get("sl_pct")
+    user_tp_pct = data.get("tp_pct")
+
+    if side == "BUY":
+        # Long: SL is lower, Target is higher
+        sl = round(price * (1 - float(user_sl_pct)/100), 2) if user_sl_pct else round(price * 0.90, 2)
+        target = round(price * (1 + float(user_tp_pct)/100), 2) if user_tp_pct else round(price * 1.20, 2)
+    else:
+        # Short (SELL): SL is HIGHER, Target is LOWER
+        # Works for both CE and PE shorting
+        sl = round(price * (1 + float(user_sl_pct)/100), 2) if user_sl_pct else round(price * 1.20, 2)
+        target = round(price * (1 - float(user_tp_pct)/100), 2) if user_tp_pct else round(price * 0.50, 2)
 
     # 🟢 SAVE TO DB FIRST TO GET THE TRADE ID
     trade_record = {
