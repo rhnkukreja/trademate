@@ -18,6 +18,7 @@ from future_options_trading.options_streamer import ws_manager, start_kite_ticke
 from future_options_trading.options_streamer import ACTIVE_OPTION_TRADES
 import future_options_trading.options_streamer as os_streamer
 from live_core_functions.live_paper_trader import backfill_exit_for_open_trades
+from future_options_trading.options_streamer import last_mock_prices
 import asyncio
 import threading
 
@@ -424,23 +425,24 @@ async def place_option_order(data: dict):
     if margin_required > current_balance:
         return {"status": "error", "message": "Insufficient funds."}
     
-    # 🟢 Set SL/TP ONLY if provided by the user in the UI, otherwise default to None
+    # 🟢 Set SL/TP based on user input, or default to 2% SL and 4% TP
     u_sl = data.get("sl_pct")
     u_tp = data.get("tp_pct")
-    sl = None
-    target = None
-
-    if u_sl and float(u_sl) > 0:
-        sl = round(price * (1 - float(u_sl)/100), 2) if side == "BUY" else round(price * (1 + float(u_sl)/100), 2)
     
-    if u_tp and float(u_tp) > 0:
-        target = round(price * (1 + float(u_tp)/100), 2) if side == "BUY" else round(price * (1 - float(u_tp)/100), 2)
+    # Use user value if valid, otherwise fallback to defaults (2.0 and 4.0)
+    sl_pct_val = float(u_sl) if u_sl and float(u_sl) > 0 else 2.0
+    tp_pct_val = float(u_tp) if u_tp and float(u_tp) > 0 else 4.0
 
+    # Calculate exact trigger prices based on BUY or SELL side
+    sl = round(price * (1 - sl_pct_val/100), 2) if side == "BUY" else round(price * (1 + sl_pct_val/100), 2)
+    target = round(price * (1 + tp_pct_val/100), 2) if side == "BUY" else round(price * (1 - tp_pct_val/100), 2)
+    
     # 🟢 SAVE TO DB FIRST TO GET THE TRADE ID
     trade_record = {
         "symbol": symbol, "entry_price": price, "quantity": qty,
         "side": side, "status": "OPEN", "sl_price": sl, "target_price": target,
         "nifty_spot_at_order": nifty_spot_at_order,
+        "margin_blocked": margin_required,
         "created_at": datetime.now().isoformat()
     }
     
@@ -717,7 +719,7 @@ async def exit_option_trade(data: dict):
     side = trade_data["side"]
     
     # 2. Get the current Price (Exit Price)
-    from future_options_trading.options_streamer import last_mock_prices
+    
     exit_price = last_mock_prices.get(symbol)
     
     if not exit_price:
@@ -738,7 +740,10 @@ async def exit_option_trade(data: dict):
 
     # 3. Calculate PnL & Refund
     pnl = (exit_price - entry_price) * quantity if side == "BUY" else (entry_price - exit_price) * quantity
-    refund_amount = (entry_price * quantity) + pnl
+    
+    # 🟢 NEW: Refund the ORIGINAL margin blocked and adjust for P&L
+    blocked_margin = trade_data.get("margin_blocked") or (entry_price * quantity)
+    refund_amount = blocked_margin + pnl
 
     # 🟢 Fetch Nifty Spot at Exit
     try:
