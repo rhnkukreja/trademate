@@ -250,21 +250,60 @@ def on_ticks(ws, ticks):
             reason = f"AUTO_EXIT: {'SL' if hit_sl else 'Target'} Hit"
             logger.info(f"🚨 {reason} for {sym} at {ltp}")
             
-            # Immediately remove from memory to prevent duplicate triggers
-            exit_option_trade(sym, ltp, reason)
+            # 🟢 1. Pop from memory to prevent duplicate firing
+            trade_backup = ACTIVE_OPTION_TRADES.pop(sym, None)
             
-            # Fire an internal POST to your official exit endpoint to refund balance accurately
-            def trigger_exit(s, tid, r):
+            # 🟢 2. Direct DB execution (No HTTP requests, no local network failures)
+            def process_direct_exit(s, tid, r, e_price, backup):
                 try:
-                    requests.post("http://127.0.0.1:8000/api/exit-option-trade", json={
-                        "symbol": s,
-                        "trade_id": tid,
+                    # Fetch trade directly
+                    db_trade = supabase.table("paper_trades").select("*").eq("id", tid).execute()
+                    if not db_trade.data:
+                        return
+                        
+                    trade_data = db_trade.data[0]
+                    if trade_data.get("status") == "CLOSED":
+                        return
+                        
+                    entry_price = trade_data["entry_price"]
+                    quantity = trade_data["quantity"]
+                    side = trade_data["side"]
+                    
+                    # Calculate PnL & Refund
+                    pnl = (e_price - entry_price) * quantity if side == "BUY" else (entry_price - e_price) * quantity
+                    blocked_margin = trade_data.get("margin_blocked") or (entry_price * quantity)
+                    refund_amount = blocked_margin + pnl
+                    
+                    # Fetch Nifty Spot at Exit
+                    try:
+                        nifty_quote = kite.quote("NSE:NIFTY 50")
+                        nifty_spot_at_exit = nifty_quote["NSE:NIFTY 50"]["last_price"]
+                    except Exception:
+                        nifty_spot_at_exit = None
+
+                    # Update Balance
+                    bal_res = supabase.table("kite_config").select("value").eq("key_name", "paper_balance").execute()
+                    current_balance = float(bal_res.data[0]["value"]) if bal_res.data else 100000.0
+                    new_balance = round(current_balance + refund_amount, 2)
+                    supabase.table("kite_config").update({"value": str(new_balance)}).eq("key_name", "paper_balance").execute()
+                    
+                    # Close Trade in DB
+                    supabase.table("paper_trades").update({
+                        "status": "CLOSED",
+                        "exit_price": float(e_price),
+                        "pnl": float(pnl),
+                        "nifty_spot_at_exit": nifty_spot_at_exit,
+                        "updated_at": datetime.now().isoformat(),
                         "exit_reasoning": r
-                    }, timeout=5)
+                    }).eq("id", tid).execute()
+                    
+                    logger.info(f"✅ SYSTEM EXIT COMPLETE: {s} squared off perfectly via direct DB sync.")
                 except Exception as e:
-                    logger.error(f"Failed to internally trigger auto-exit for {s}: {e}")
+                    logger.error(f"❌ Critical DB Error during auto-exit for {s}: {e}")
+                    # 🟢 3. IF IT FAILS, PUT IT BACK IN MEMORY TO RETRY INSTANTLY
+                    if backup: ACTIVE_OPTION_TRADES[s] = backup
             
-            threading.Thread(target=trigger_exit, args=(sym, trade_id, reason), daemon=True).start()
+            threading.Thread(target=process_direct_exit, args=(sym, trade_id, reason, ltp, trade_backup), daemon=True).start()
 
     asyncio.run_coroutine_threadsafe(ws_manager.broadcast({"type": "live_options", "data": formatted_ticks}), fastapi_loop)
 
