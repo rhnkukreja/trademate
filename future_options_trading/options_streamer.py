@@ -90,6 +90,15 @@ def get_nifty_weekly_options():
         options_tokens.append(nifty_spot_token)
         token_map[nifty_spot_token] = {"symbol": "NIFTY 50", "strike": "SPOT", "type": "SPOT"}
 
+        # 🟢 FIX: Ensure we never drop active trades during a WebSocket reconnect
+        for sym in list(ACTIVE_OPTION_TRADES.keys()):
+            trade_row = df[df["tradingsymbol"] == sym]
+            if not trade_row.empty:
+                tkn = int(trade_row.iloc[0]["instrument_token"])
+                if tkn not in token_map:
+                    options_tokens.append(tkn)
+                    token_map[tkn] = {"symbol": sym, "strike": int(trade_row.iloc[0]["strike"]), "type": trade_row.iloc[0]["instrument_type"]}
+
         return token_map, options_tokens
     except Exception as e:
         logger.error(f"❌ Error fetching Nifty options: {e}")
@@ -421,6 +430,34 @@ def start_internal_ui_test():
         time.sleep(2)
 
 strategy_history_cache = {"date": None, "hits": []}
+
+def subscribe_to_new_trade(symbol: str):
+    """Dynamically forces the Kite WebSocket to subscribe to a new trade."""
+    global ticker, token_to_symbol, NFO_INSTRUMENTS_CACHE
+    try:
+        if NFO_INSTRUMENTS_CACHE is None or date.today() != getattr(NFO_INSTRUMENTS_CACHE, '_cache_date', None):
+            NFO_INSTRUMENTS_CACHE = pd.DataFrame(kite.instruments("NFO"))
+            NFO_INSTRUMENTS_CACHE._cache_date = date.today()
+            
+        row = NFO_INSTRUMENTS_CACHE[NFO_INSTRUMENTS_CACHE['tradingsymbol'] == symbol]
+        if not row.empty:
+            token = int(row.iloc[0]['instrument_token'])
+            
+            # Add to mapping so on_ticks can process it
+            if token not in token_to_symbol:
+                strike = int(row.iloc[0]['strike'])
+                opt_type = row.iloc[0]['instrument_type']
+                token_to_symbol[token] = {"symbol": symbol, "strike": strike, "type": opt_type}
+                
+                # Tell Kite to start streaming it NOW
+                if ticker and ticker.is_connected():
+                    ticker.subscribe([token])
+                    ticker.set_mode(ticker.MODE_FULL, [token])
+                    logger.info(f"📡 Dynamically subscribed to live data for new trade: {symbol}")
+        else:
+            logger.warning(f"Could not find token for {symbol} to subscribe.")
+    except Exception as e:
+        logger.error(f"Failed to dynamically subscribe to {symbol}: {e}")
 
 async def global_strategy_monitor():
     """Background task to globally monitor Nifty strategy and broadcast live status."""

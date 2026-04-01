@@ -436,7 +436,7 @@ async def place_option_order(data: dict):
     # Calculate exact trigger prices based on BUY or SELL side
     sl = round(price * (1 - sl_pct_val/100), 2) if side == "BUY" else round(price * (1 + sl_pct_val/100), 2)
     target = round(price * (1 + tp_pct_val/100), 2) if side == "BUY" else round(price * (1 - tp_pct_val/100), 2)
-    
+
     # 🟢 SAVE TO DB FIRST TO GET THE TRADE ID
     trade_record = {
         "symbol": symbol, "entry_price": price, "quantity": qty,
@@ -455,6 +455,8 @@ async def place_option_order(data: dict):
             "trade_id": trade_id, "entry": price, "qty": qty, 
             "type": side, "sl": sl, "target": target
         }
+        # 🟢 FIX: Instantly subscribe the background WebSocket to this new trade
+        os_streamer.subscribe_to_new_trade(symbol)
     
     # Update Balance
     new_balance = round(current_balance - margin_required, 2)
