@@ -324,52 +324,45 @@ def on_close(ws, code, reason):
 def start_kite_ticker():
     def run_loop():
         global ticker, token_to_symbol
-        while True:
-            try:
-                # 🟢 ZOMBIE KILLER: Force stop the previous ticker before starting a new one
-                global ticker
-                if ticker is not None:
-                    logger.info("🛑 Stopping existing ticker instance...")
-                    try:
-                        ticker.stop()
-                    except: pass
-                    ticker = None
-
-                logger.info("🔄 Fetching fresh token from Supabase...")
-                auth_token = get_active_token()
-                if not auth_token:
-                    time.sleep(10)
-                    continue
+        try:
+            logger.info("🔄 Fetching fresh token from Supabase...")
+            auth_token = get_active_token()
+            if not auth_token:
+                logger.error("❌ No token found. Exiting to trigger clean Render restart...")
+                os._exit(1)
+            
+            # Apply the token to the global REST client before calling functions that use it
+            kite.set_access_token(auth_token)
+            logger.info(f"✅ Session Synced. Token starts with: {auth_token[:5]}...")
+            
+            token_to_symbol, tokens_to_sub = get_nifty_weekly_options()
+            from utils.common import KITE_API_KEY
+            
+            ticker = KiteTicker(KITE_API_KEY, auth_token)
+            ticker.on_connect = on_connect
+            ticker.on_ticks = on_ticks
+            
+            # 🟢 FIX: Let Kite handle brief network drops natively. Do NOT call ticker.stop()
+            ticker.on_close = lambda ws, code, reason: logger.warning(f"Ticker Closed: {code} - {reason}")
+            ticker.on_error = lambda ws, code, reason: logger.error(f"Ticker Error: {code} - {reason}")
+            ticker.on_reconnect = lambda ws, attempts_count: logger.info(f"🔌 Reconnecting... Attempt {attempts_count}")
+            
+            # 🟢 FIX: If reconnects completely fail, exit the app so Render cleanly reboots it
+            ticker.on_noreconnect = lambda ws: (logger.error("🚨 Ticker max reconnects hit. Forcing cloud restart..."), os._exit(1))
+            
+            logger.info("🔌 Connecting Kite Ticker...")
+            
+            # Connect the ticker natively
+            ticker.connect(threaded=True)
+            
+            # Keep the thread alive quietly
+            while True:
+                time.sleep(60)
                 
-                # Apply the token to the global REST client before calling functions that use it
-                kite.set_access_token(auth_token)
-                logger.info(f"✅ Session Synced. Token starts with: {auth_token[:5]}...")
-                
-                token_to_symbol, tokens_to_sub = get_nifty_weekly_options()
-                from utils.common import KITE_API_KEY
-                
-                ticker = KiteTicker(KITE_API_KEY, auth_token)
-                ticker.on_connect = on_connect
-                ticker.on_ticks = on_ticks
-                # Log the actual reason so the "Ticker Loop Error" is not empty
-                ticker.on_close = lambda ws, code, reason: (logger.warning(f"Ticker Closed: {reason}"), ticker.stop())
-                ticker.on_error = lambda ws, code, reason: (logger.error(f"Ticker Error: {reason}"), ticker.stop())
-                
-                logger.info("🔌 Connecting Kite Ticker...")
-                ticker.connect(threaded=True)
-                
-                time.sleep(5)
-                
-                # Monitor loop: Detect if it drops so we can fetch a fresh token
-                while True:
-                    if not ticker.is_connected():
-                        logger.warning("⚠️ Ticker disconnected. Restarting loop...")
-                        break
-                    time.sleep(5)
-            except Exception as e:
-                # 🟢 FIX: Force print the type of error to see why it's silent
-                logger.error(f"❌ Ticker Loop Error ({type(e).__name__}): {repr(e)}")
-                time.sleep(10)
+        except Exception as e:
+            logger.error(f"❌ Critical Ticker Boot Error ({type(e).__name__}): {repr(e)}")
+            time.sleep(2)
+            os._exit(1) # Force clean Render restart
     
     t = threading.Thread(target=run_loop, daemon=True)
     t.start()
